@@ -27,22 +27,42 @@ pip install -r requirements.txt
 
 ## 1b. Intel Arc B580 (transcrição + vídeo na GPU)
 
-`faster-whisper`/`CTranslate2` é CUDA-only: nunca usa Intel GPU. Por isso o
-clipper tem backends próprios que usam a B580, com CPU como fallback explícito
-(nunca silencioso).
+`faster-whisper`/`CTranslate2` é CUDA-only: nunca usa Intel GPU. O backend
+padrão de transcrição é **whisper.cpp + Vulkan na B580** (validado aqui:
+7 min transcritos em 38 s, RTF 0,09, contra ~13 min em CPU), com CPU como
+fallback explícito (nunca silencioso).
+
+### Instalar o backend Vulkan (uma vez)
 
 ```bash
-# Fedora: drivers para a B580 expor GPU ao OpenVINO/ffmpeg
-sudo dnf install -y intel-level-zero intel-media-driver
-# verifique: vainfo | grep -i intel ; python3 -c "import openvino as ov; print(ov.Core().available_devices)"
-# esperado: ['CPU', 'GPU']
+# 1. ferramentas de compilação (único passo com sudo)
+sudo dnf install -y cmake gcc-c++ vulkan-headers shaderc
 
-# backend OpenVINO (recomendado, pip puro)
-pip install openvino optimum-intel transformers soundfile
+# 2. whisper.cpp com Vulkan (código em thirdparty/, binário local, sem sudo)
+git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git thirdparty/whisper.cpp
+git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git thirdparty/SPIRV-Headers
+cmake -B thirdparty/SPIRV-Headers/build -S thirdparty/SPIRV-Headers \
+  -DCMAKE_INSTALL_PREFIX="$PWD/thirdparty/prefix" > /dev/null
+cmake --install thirdparty/SPIRV-Headers/build > /dev/null
+cmake -B thirdparty/whisper.cpp/build -S thirdparty/whisper.cpp \
+  -DGGML_VULKAN=1 -DCMAKE_BUILD_TYPE=Release \
+  -DVulkan_LIBRARY=/usr/lib64/libvulkan.so.1 \
+  -DCMAKE_PREFIX_PATH="$PWD/thirdparty/prefix" \
+  "-DCMAKE_CXX_FLAGS=-I$PWD/thirdparty/prefix/include" > /dev/null
+cmake --build thirdparty/whisper.cpp/build -j6 --config Release --target whisper-cli
 
-# alternativa: whisper.cpp com Vulkan (binário externo + modelo ggml;
-# baixe o modelo medium em models/ggml-medium.bin)
+# 3. modelo ggml-medium (~1,5 GB, mesmo "medium" do faster-whisper)
+mkdir -p models
+curl -sL -o models/ggml-medium.bin \
+  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
+
+# 4. verificar: Vulkan enxerga a B580?
+vulkaninfo --summary | grep -A1 GPU0   # Intel(R) Arc(tm) B580 (driver Mesa ANV)
+python tools/smoke_gpu.py              # Inference: SUCCESS, Device used: GPU
 ```
+
+Versão validada: whisper.cpp 1.9.4-dev (2026-09-18), Mesa ANV 26.2.2,
+ggml-medium.bin (1533 MB na VRAM durante inferência).
 
 Seleção do backend (`--transcribe-backend` ou `CLIPPER_TRANSCRIBE_BACKEND`):
 
@@ -54,11 +74,11 @@ Seleção do backend (`--transcribe-backend` ou `CLIPPER_TRANSCRIBE_BACKEND`):
 | `vulkan` | Só whisper.cpp; se indisponível, CPU com motivo |
 | `cpu` | Sempre CPU (`faster-whisper` int8, threads limitados) |
 
-No início o programa sempre imprime:
+No início o programa sempre imprime (exemplo real com Vulkan ativo):
 
 ```text
 GPU detected: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
-Transcription backend: OPENVINO
+Transcription backend: VULKAN
 Video acceleration: h264_qsv
 ```
 
@@ -73,8 +93,32 @@ Reason: OpenVINO instalado mas sem device GPU visível (falta driver Level Zero/
 **Vídeo:** o encode usa `h264_qsv` (Quick Sync, VRAM da B580) quando uma sonda
 funcional de 10 frames passa; senão cai para `libx264` com 1 aviso por clipe.
 Filtros (`scale/crop/pad/subtitles`) e detecção de rosto (OpenCV) continuam na
-CPU — são leves perto da transcrição/encode. Sem promessa de speedup: meça no
-seu hardware (`time`, `intel_gpu_top`, `htop`).
+CPU — são leves perto da transcrição/encode.
+
+### Benchmark medido: CPU vs B580 (60 s de áudio, Whisper medium)
+
+| Backend | Tempo | RTF | CPU | RAM pico |
+|---|---|---|---|---|
+| whisper.cpp + Vulkan / B580 | ~4,6 s (incl. carga do modelo) | **0,08** | ~1 core | 187 MB |
+| faster-whisper int8 / 4600G 4 threads | 134,8 s | 2,25 | 366% | 2,6 GB |
+
+~30× mais rápido, ~14× menos RAM, CPU livre. Medido em 2026-09-18 com
+`/usr/bin/time -v` nos dois binários sobre o mesmo WAV de 60 s. Sem promessa
+genérica de speedup: esses são os números desta máquina.
+
+### Como o backend Vulkan funciona (resumo honesto)
+
+Áudio em chunks de 30 s via ffmpeg (1 por vez, removidos após uso) →
+1 processo `whisper-cli` por chunk (sequencial, timeout 300 s, modelo carregado
+1× por chunk) → JSON completo (`-ojf`, com word-timestamps reais) → segmentos
+com tempos em segundos. VRAM: 1533 MB durante inferência, liberada ao fim de
+cada chunk. Nada é paralelo: sem dezenas de threads/processos.
+
+Limitações do backend Vulkan: áudio altamente repetitivo pode gerar alucinação
+do Whisper (traço do modelo, não do backend); cada chunk recarrega o modelo
+(segundos, aceitável); sem `intel-media-driver` o QSV cai para `libx264`.
+O backend OpenVINO continua existindo como alternativa (exige
+`intel-level-zero` + `pip install openvino optimum-intel transformers soundfile`).
 
 **RAM:** vídeos de ~17 GB nunca são carregados inteiros. O áudio é extraído em
 chunks de 30 s (~1 MB cada, 1 por vez, temporários removidos) e a transcrição
@@ -88,13 +132,16 @@ python tools/smoke_gpu.py
 
 Responde objetivamente (`GPU detected`, `Backend`, `Model loaded`,
 `Inference`, `Device used`; exit 0 = inferência OK na GPU, exit 2 =
-indisponível com motivo). Estado atual nesta máquina: GPU detectada, mas
-OpenVINO sem device GPU — falta o runtime de usuário Intel. **Nada é
-instalado automaticamente**; se for o seu caso:
+indisponível com motivo). Testa whisper.cpp/Vulkan primeiro (ordem do `auto`);
+se Vulkan estiver indisponível, avalia o OpenVINO. Estado validado aqui:
 
-```bash
-sudo dnf install -y intel-level-zero intel-media-driver
-python tools/smoke_gpu.py   # deve passar a mostrar Backend: openvino + Inference: SUCCESS
+```text
+GPU detected: YES
+GPU device: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
+Backend: vulkan (whisper.cpp + Vulkan, device 0 = B580)
+Model loaded: YES (models/ggml-medium.bin, 1533 MB na VRAM)
+Inference: SUCCESS (JSON válido gerado via Vulkan)
+Device used: GPU
 ```
 
 ### Métricas de GPU Intel
