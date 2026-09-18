@@ -1,204 +1,65 @@
 # Gerador de Cortes — lives e gameplay
 
-Programa em Python que pega a gravação de uma live/gameplay, transcreve,
-identifica os melhores momentos e já entrega os clipes cortados em 9:16
-com legenda queimada, prontos pra postar.
+Programa em Python que pega a gravação de uma live/gameplay, transcreve o
+áudio localmente, identifica os melhores momentos com IA e já entrega os
+clipes cortados em 9:16 com legenda queimada, prontos pra postar.
 
-Pensado pra rodar no seu ritmo: sobe o vídeo de manhã, os clipes ficam
-prontos ao longo do dia, você posta à noite. Sem custo (usa Whisper
-local + tier grátis da NVIDIA Build).
+Sem custo: Whisper local (na sua GPU) + tier grátis da NVIDIA Build.
 
-## 1. Instalar dependências
-
-```bash
-# ffmpeg (se ainda não tiver — precisa de ffmpeg E ffprobe)
-sudo apt install ffmpeg        # Linux
-brew install ffmpeg            # macOS
-
-# dependências Python
-pip install -r requirements.txt
-```
-
-> Se tiver GPU NVIDIA, o faster-whisper usa automaticamente (muito mais
-> rápido). Sem GPU, roda em CPU — mais lento, mas funciona.
-> Se tiver Intel Arc (ex: B580), veja a seção **Intel Arc (B580)** abaixo:
-> a transcrição pode rodar na GPU via OpenVINO ou whisper.cpp/Vulkan,
-> e o encode usa Quick Sync (QSV) quando o driver está funcional.
-
-## 1b. Intel Arc B580 (transcrição + vídeo na GPU)
-
-`faster-whisper`/`CTranslate2` é CUDA-only: nunca usa Intel GPU. O backend
-padrão de transcrição é **whisper.cpp + Vulkan na B580** (validado aqui:
-7 min transcritos em 38 s, RTF 0,09, contra ~13 min em CPU), com CPU como
-fallback explícito (nunca silencioso).
-
-### Instalar o backend Vulkan (uma vez)
-
-```bash
-# 1. ferramentas de compilação (único passo com sudo)
-sudo dnf install -y cmake gcc-c++ vulkan-headers shaderc
-
-# 2. whisper.cpp com Vulkan (código em thirdparty/, binário local, sem sudo)
-git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git thirdparty/whisper.cpp
-git clone --depth 1 https://github.com/KhronosGroup/SPIRV-Headers.git thirdparty/SPIRV-Headers
-cmake -B thirdparty/SPIRV-Headers/build -S thirdparty/SPIRV-Headers \
-  -DCMAKE_INSTALL_PREFIX="$PWD/thirdparty/prefix" > /dev/null
-cmake --install thirdparty/SPIRV-Headers/build > /dev/null
-cmake -B thirdparty/whisper.cpp/build -S thirdparty/whisper.cpp \
-  -DGGML_VULKAN=1 -DCMAKE_BUILD_TYPE=Release \
-  -DVulkan_LIBRARY=/usr/lib64/libvulkan.so.1 \
-  -DCMAKE_PREFIX_PATH="$PWD/thirdparty/prefix" \
-  "-DCMAKE_CXX_FLAGS=-I$PWD/thirdparty/prefix/include" > /dev/null
-cmake --build thirdparty/whisper.cpp/build -j6 --config Release --target whisper-cli
-
-# 3. modelo ggml-medium (~1,5 GB, mesmo "medium" do faster-whisper)
-mkdir -p models
-curl -sL -o models/ggml-medium.bin \
-  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin
-
-# 4. verificar: Vulkan enxerga a B580?
-vulkaninfo --summary | grep -A1 GPU0   # Intel(R) Arc(tm) B580 (driver Mesa ANV)
-python tools/smoke_gpu.py              # Inference: SUCCESS, Device used: GPU
-```
-
-Versão validada: whisper.cpp 1.9.4-dev (2026-09-18), Mesa ANV 26.2.2,
-ggml-medium.bin (1533 MB na VRAM durante inferência).
-
-Seleção do backend (`--transcribe-backend` ou `CLIPPER_TRANSCRIBE_BACKEND`):
-
-| Valor | Efeito |
-|---|---|
-| `auto` (padrão) | whisper.cpp/Vulkan → OpenVINO GPU → CPU (fallback com motivo impresso) |
-| `gpu` | **Exige GPU**: usa Vulkan ou OpenVINO/GPU; se indisponível, **falha claramente** (sem fallback) |
-| `openvino` | Só OpenVINO GPU; se indisponível, CPU com motivo |
-| `vulkan` | Só whisper.cpp; se indisponível, CPU com motivo |
-| `cpu` | Sempre CPU (`faster-whisper` int8, threads limitados) |
-
-No início o programa sempre imprime (exemplo real com Vulkan ativo):
+## O que faz
 
 ```text
-GPU detected: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
-Transcription backend: VULKAN
-Video acceleration: h264_qsv
+live/gameplay (mp4, mkv — até ~17 GB)
+        ↓
+transcreve tudo localmente (Intel Arc B580)
+        ↓
+IA avalia cada trecho (nota 0–10, título, hashtags)
+        ↓
+cortes/01_*.mp4 … N_*.mp4 (9:16, legendados) + manifest.json
+        ↓
+metrics/<data>_<video>_<id>.json (relatório da execução)
 ```
 
-ou, se a GPU não puder ser usada:
+## Como funciona
 
-```text
-GPU detected: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
-Transcription backend: CPU
-Reason: OpenVINO instalado mas sem device GPU visível (falta driver Level Zero/OpenCL?)
-```
+1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão);
+   fallback `faster-whisper` CPU int8, sempre com motivo explícito.
+2. **Janelas candidatas** — janela deslizante 20–90 s, passo 20 s, sobre a
+   transcrição; `start/end` ajustados à palavra mais próxima (±1,5 s) + respiro
+   `--pad`.
+3. **Áudio** — energia por janela via `ffmpeg volumedetect`
+   (`alta/media/baixa`) + `speech_rate` (palavras/s).
+4. **Scoring** — lotes de ~6 candidatos para o LLM (NVIDIA Build) com prompt
+   calibrado + duração/energia/speech_rate + contexto/few-shot; retry 3× com
+   backoff 10/30/60 s; falha marca `failed` (nunca nota 0 silenciosa).
+5. **Seleção** — NMS com decaimento (`score * (1 - 0.8*overlap)`), filtro
+   `--min-score`, diversidade `--max-per-10min`.
+6. **Corte** — `ffmpeg` com seek duplo (rápido + frame-accurate), crop 9:16
+   centralizado no rosto (fallback: centro), legenda queimada, encode
+   `h264_qsv` (B580) com fallback `libx264`.
+7. **Relatório** — resumo no terminal + JSON próprio em `metrics/`, em
+   sucesso, falha ou Ctrl+C (`interrupted`).
 
-**Vídeo:** o encode usa `h264_qsv` (Quick Sync, VRAM da B580) quando uma sonda
-funcional de 10 frames passa; senão cai para `libx264` com 1 aviso por clipe.
-Filtros (`scale/crop/pad/subtitles`) e detecção de rosto (OpenCV) continuam na
-CPU — são leves perto da transcrição/encode.
-
-### Benchmark medido: CPU vs B580 (60 s de áudio, Whisper medium)
-
-| Backend | Tempo | RTF | CPU | RAM pico |
-|---|---|---|---|---|
-| whisper.cpp + Vulkan / B580 | ~4,6 s (incl. carga do modelo) | **0,08** | ~1 core | 187 MB |
-| faster-whisper int8 / 4600G 4 threads | 134,8 s | 2,25 | 366% | 2,6 GB |
-
-~30× mais rápido, ~14× menos RAM, CPU livre. Medido em 2026-09-18 com
-`/usr/bin/time -v` nos dois binários sobre o mesmo WAV de 60 s. Sem promessa
-genérica de speedup: esses são os números desta máquina.
-
-### Como o backend Vulkan funciona (resumo honesto)
-
-Áudio em chunks de 30 s via ffmpeg (1 por vez, removidos após uso) →
-1 processo `whisper-cli` por chunk (sequencial, timeout 300 s, modelo carregado
-1× por chunk) → JSON completo (`-ojf`, com word-timestamps reais) → segmentos
-com tempos em segundos. VRAM: 1533 MB durante inferência, liberada ao fim de
-cada chunk. Nada é paralelo: sem dezenas de threads/processos.
-
-Limitações do backend Vulkan: áudio altamente repetitivo pode gerar alucinação
-do Whisper (traço do modelo, não do backend); cada chunk recarrega o modelo
-(segundos, aceitável); sem `intel-media-driver` o QSV cai para `libx264`.
-O backend OpenVINO continua existindo como alternativa (exige
-`intel-level-zero` + `pip install openvino optimum-intel transformers soundfile`).
-
-**RAM:** vídeos de ~17 GB nunca são carregados inteiros. O áudio é extraído em
-chunks de 30 s (~1 MB cada, 1 por vez, temporários removidos) e a transcrição
-processa chunk a chunk. Com 16 GB de RAM o uso fica em poucos GB.
-
-### Smoke test da GPU (sem vídeos reais)
+## Uso rápido
 
 ```bash
-python tools/smoke_gpu.py
+./run.sh video.mkv                    # 8 clipes em cortes/, com cache
+./run.sh video.mkv --top 5            # 5 clipes
+./run.sh video.mkv --out meus_cortes  # outra pasta
+./run.sh video.mkv --no-cache         # sem cache (só p/ teste rápido)
 ```
 
-Responde objetivamente (`GPU detected`, `Backend`, `Model loaded`,
-`Inference`, `Device used`; exit 0 = inferência OK na GPU, exit 2 =
-indisponível com motivo). Testa whisper.cpp/Vulkan primeiro (ordem do `auto`);
-se Vulkan estiver indisponível, avalia o OpenVINO. Estado validado aqui:
-
-```text
-GPU detected: YES
-GPU device: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
-Backend: vulkan (whisper.cpp + Vulkan, device 0 = B580)
-Model loaded: YES (models/ggml-medium.bin, 1533 MB na VRAM)
-Inference: SUCCESS (JSON válido gerado via Vulkan)
-Device used: GPU
-```
-
-### Métricas de GPU Intel
-
-O relatório registra o device detectado; utilização/VRAM ficam `null` quando
-indisponíveis. Motivo: `nvidia-smi` não serve para a B580, `intel_gpu_top`
-não está instalado e o sysfs do driver `xe` não expõe contadores confiáveis
-de utilização/VRAM — `null` honesto em vez de número inventado.
-
-## 2. Pegar uma chave grátis da NVIDIA Build
-
-1. Crie uma conta em https://build.nvidia.com
-2. Escolha um modelo de texto (ex: GLM 5.3, Nemotron, etc.)
-3. Copie sua API key e o **nome exato do modelo** mostrado no code snippet
-   da página do modelo (o nome muda com frequência, então confira lá)
+O `run.sh` liga o cache (`.cache/clipper`), carrega o `.env` sozinho e
+repassa qualquer flag do `clipper.py`. Equivalente manual:
 
 ```bash
-export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
-export NIM_MODEL="z-ai/glm-5.3"   # default atual; ajuste conforme o catálogo
-```
-
-### Qual modelo escolher
-
-Pontuar "isso é viral?" é julgamento subjetivo (humor, emoção, timing) —
-não precisa de tool calling nem multimodal, então o critério principal é
-qualidade de raciocínio/instrução, não tamanho bruto:
-
-| Modelo | Quando usar |
-|---|---|
-| `z-ai/glm-5.3` (padrão atual, verificado vivo em 2026-09-18) | Decisão original do projeto — reasoning nativo, melhor para "sentir" hype/humor |
-| `z-ai/glm-5.3-flash` | Variante mais rápida do mesmo modelo |
-| `nvidia/nemotron-3-super-120b-a12b` | Alternativa testada, bom equilíbrio |
-| `mistralai/mistral-nemotron` | Mais leve, use se os de cima estiverem instáveis no free tier |
-
-> O modelo padrão anterior (`meta/llama-3.3-70b-instruct`, que nunca foi a
-> escolha do projeto) entrou em EOL em 2026-08-26 (HTTP 410) e foi removido.
-> Slugs do catálogo expiram — se o scoring falhar com `Gone`, liste os modelos
-> vivos (`GET https://integrate.api.nvidia.com/v1/models`) e ajuste
-> `NIM_MODEL`/`--model`.
-
-> O nome exato do modelo no catálogo muda com frequência — sempre confira
-> o slug certo no code snippet da página do modelo em build.nvidia.com
-> antes de colocar no `NIM_MODEL`.
-
-O script já trata automaticamente o caso de modelos com reasoning nativo
-(que às vezes devolvem um bloco de "pensamento" antes da resposta final),
-removendo esse bloco antes de interpretar o JSON.
-
-## 3. Rodar
-
-```bash
-python clipper.py minha_live.mp4 --out cortes/ --top 8
+export NVIDIA_API_KEY="nvapi-sua-chave"
+python clipper.py minha_live.mp4 --out cortes/ --top 8 --cache-dir .cache/clipper
 ```
 
 Isso gera:
 
-```
+```text
 cortes/
 ├── 01_jogada_insana_no_final.mp4
 ├── 02_treta_com_o_chat.mp4
@@ -206,134 +67,184 @@ cortes/
 └── manifest.json   # nota, título, hashtags, energy, speech_rate, snapped
 ```
 
-### Métricas por execução
+> Vídeo grande? Use **sempre** `--cache-dir` (o `run.sh` já faz isso): se algo
+> cair no meio, re-rodar reusa transcrição + scores em vez de recomeçar do zero.
 
-Toda execução — sucesso ou falha — gera automaticamente:
-
-1. um resumo legível no terminal (`EXECUTION METRICS`);
-2. um relatório JSON próprio em `metrics/`:
-
-```
-metrics/
-├── 2026-09-18_101530_video-7min_a1b2c3.json
-├── 2026-09-18_104812_video-18min_d4e5f6.json
-└── 2026-09-18_112045_video-1h40_789abc.json
-```
-
-Um vídeo = um JSON, mesmo que o mesmo arquivo seja processado várias vezes
-(timestamp + id único evitam colisão; nada é sobrescrito). Falhas também
-geram relatório (`status: "failed"`, com etapa, tipo/mensagem do erro,
-backend usado e retries).
-
-O JSON contém: vídeo (nome, tamanho, duração, resolução, codec, FPS),
-execução (início/fim, duração, status, erro, tempos por etapa, args),
-transcrição (modelo, backend, tempo, RTF, segmentos), GPU/CPU/RAM
-(agregados leves: média/pico — `null` quando indisponível), FFmpeg
-(encoder, tempos, acertos/falhas) e API NVIDIA (requests, retries,
-latências, tokens somente se a API retornar, custo sempre `null`).
-
-Ctrl+C também gera relatório (`status: "interrupted"`, com a etapa
-interrompida) antes de encerrar.
-
-Monitoramento leve: 1 thread, 1 amostra a cada 2 s, só agregados em
-memória. O vídeo nunca é carregado nem copiado (só `stat` + `ffprobe`).
-Sem transcrição no JSON.
-
-### Cache (não retranscreva 4h à toa)
+## Instalação
 
 ```bash
-python clipper.py live.mp4 --cache-dir .cache/clipper --out cortes/
-# segunda vez: usa transcrição + scores do cache
-python clipper.py live.mp4 --cache-dir .cache/clipper --out cortes2/ --top 5
+# 1. sistema (Fedora 44 testado): ffmpeg + drivers da B580
+sudo dnf install -y ffmpeg intel-level-zero intel-media-driver
 
-# forçar refazer
-python clipper.py live.mp4 --cache-dir .cache/clipper --force-retranscribe
-python clipper.py live.mp4 --cache-dir .cache/clipper --force-rescore --context "ranked Valorant"
+# 2. Python
+pip install -r requirements.txt
+# -> faster-whisper, openai, opencv-python, psutil
+
+# 3. chave grátis do scoring (https://build.nvidia.com)
+export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
+export NIM_MODEL="z-ai/glm-5.3"   # default atual; ajuste conforme o catálogo
+
+# 4. backend Vulkan da transcrição (uma vez; detalhe na seção GPU)
+#    git clone whisper.cpp + SPIRV-Headers, cmake -DGGML_VULKAN=1,
+#    curl ggml-medium.bin -> models/  (passo a passo na seção GPU)
+vulkaninfo --summary | grep -A1 GPU0   # Intel(R) Arc(tm) B580 (Mesa ANV)
+python tools/smoke_gpu.py              # Inference: SUCCESS, Device used: GPU
 ```
 
-O fingerprint é `tamanho+mtime+modelo Whisper+idioma` — se trocar o arquivo,
-o tamanho/mtime muda e o cache é invalidado automaticamente.
+Sem a etapa 4, a transcrição roda em CPU (mais lento, mas funciona).
 
-### Opções completas
+## Transcrição e GPU (Intel Arc B580)
+
+`faster-whisper`/`CTranslate2` é CUDA-only: nunca usa Intel GPU. Por isso o
+padrão é **whisper.cpp + Vulkan na B580**, com CPU como fallback explícito.
+
+| Valor (`--transcribe-backend` ou `CLIPPER_TRANSCRIBE_BACKEND`) | Efeito |
+|---|---|
+| `auto` (padrão) | whisper.cpp/Vulkan → OpenVINO GPU → CPU (fallback com motivo impresso) |
+| `gpu` | **Exige GPU**: Vulkan ou OpenVINO/GPU; se indisponível, **falha claramente** (sem fallback) |
+| `vulkan` | Só whisper.cpp; se indisponível, CPU com motivo |
+| `openvino` | Só OpenVINO GPU (exige `intel-level-zero` + `pip install openvino optimum-intel transformers soundfile`); se indisponível, CPU com motivo |
+| `cpu` | Sempre CPU (`faster-whisper` int8, 4 threads) |
+
+No início o programa sempre imprime (exemplo real):
+
+```text
+GPU detected: Intel Corporation Battlemage G21 [Arc B580] [8086:e20b]
+Transcription backend: VULKAN
+Video acceleration: h264_qsv
+```
+
+O encode usa `h264_qsv` (Quick Sync) quando a sonda funcional passa; senão
+`libx264` com 1 aviso por clipe. Filtros e detecção de rosto ficam na CPU
+(leves perto de transcrição/encode).
+
+### Benchmark medido (60 s de áudio, Whisper medium, esta máquina)
+
+| Backend | Tempo | RTF | CPU | RAM pico |
+|---|---|---|---|---|
+| whisper.cpp + Vulkan / B580 | ~4,6 s | **0,08** | ~1 core | 187 MB |
+| faster-whisper int8 / 4600G 4 threads | 134,8 s | 2,25 | 366% | 2,6 GB |
+
+Medido em 2026-09-18 com `/usr/bin/time -v` sobre o mesmo WAV. Vídeo real de
+7 min: 38 s de transcrição na B580.
+
+### Como o backend Vulkan funciona
+
+Chunks de 30 s via ffmpeg (1 por vez, removidos após uso) → 1 processo
+`whisper-cli` por chunk (sequencial, timeout 300 s) → JSON com
+word-timestamps reais → segmentos. VRAM: 1533 MB durante inferência, liberada
+por chunk. Modelo: `models/ggml-medium.bin` (~1,5 GB, HuggingFace
+`ggerganov/whisper.cpp`); binário em `thirdparty/whisper.cpp/build/bin`
+(whisper.cpp 1.9.4-dev validado; ambos ignorados no git).
+
+Limitações: áudio altamente repetitivo pode alucinar o Whisper (traço do
+modelo); cada chunk recarrega o modelo (segundos); utilização/VRAM ficam
+`null` no relatório (`nvidia-smi` não serve p/ Intel, `intel_gpu_top`
+ausente, sysfs do driver `xe` sem contadores — `null` honesto).
+
+## Scoring e modelos
+
+Pontuar "isso é viral?" usa LLM remoto **só com texto** (trecho de até 1500
+chars + tempos/energia/speech_rate). **Vídeo e áudio nunca saem da máquina.**
+
+| Modelo | Quando usar |
+|---|---|
+| `z-ai/glm-5.3` (padrão, vivo em 2026-09-18) | Decisão original — reasoning nativo, melhor p/ hype/humor |
+| `z-ai/glm-5.3-flash` | Variante mais rápida do mesmo modelo |
+| `nvidia/nemotron-3-super-120b-a12b` | Alternativa testada |
+| `mistralai/mistral-nemotron` | Mais leve, se os de cima instabilizarem |
+
+Slugs expiram (ex.: `meta/llama-3.3-70b-instruct` morreu em 2026-08-26 com
+HTTP 410). Se o scoring falhar com `Gone`, liste os vivos
+(`GET https://integrate.api.nvidia.com/v1/models`) e ajuste
+`NIM_MODEL`/`--model`. O código remove blocos de reasoning (`<think>`) antes
+de ler o JSON.
+
+> Atenção ao custo real: o GLM raciocina antes de responder — cada lote leva
+> ~1 min ou mais. Num vídeo de 7 min o scoring levou 17 min (85% do run).
+> É o gargalo atual, não a máquina. A variante `flash` existe para isso.
+
+## Métricas e cache
+
+Toda execução gera: resumo `EXECUTION METRICS` no terminal + JSON próprio em
+`metrics/<data>_<video>_<id>.json` (nunca sobrescreve; falhas e Ctrl+C também
+geram). Conteúdo: vídeo, execução (tempos por etapa, args, erro),
+transcrição (backend, tempo, RTF, segmentos), GPU/CPU/RAM (média/pico, `null`
+se indisponível), FFmpeg, API NVIDIA (requests/retries/latências/tokens;
+custo sempre `null`). Monitoramento: 1 thread, 1 amostra/2 s, só agregados.
+
+Cache (`--cache-dir`, ligado no `run.sh`): transcrição + scores por
+fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
+`--force-retranscribe` / `--force-rescore` refazem cada camada.
+
+## CLI completa
 
 | Flag | Efeito | Padrão |
 |---|---|---|
+| `VIDEO` | Arquivo de entrada (nunca alterado) | — (obrigatório) |
+| `--out DIR` | Pasta de saída | `cortes` |
 | `--top N` | Quantos clipes gerar | 8 |
-| `--no-vertical` | Mantém widescreen em vez de recortar pra 9:16 | 9:16 |
-| `--no-captions` | Não queima legenda no vídeo | legenda on |
-| `--model NOME` | Usa outro modelo do catálogo NVIDIA Build | env NIM_MODEL |
-| `--cache-dir DIR` | Ativa cache de transcrição + scores | desligado |
+| `--model NOME` | Modelo de scoring | env `NIM_MODEL` |
+| `--transcribe-backend B` | `auto`, `gpu`, `vulkan`, `openvino`, `cpu` | env ou `auto` |
+| `--cache-dir DIR` | Ativa cache | desligado |
 | `--force-retranscribe` | Ignora cache de transcrição | off |
 | `--force-rescore` | Ignora cache de scores | off |
-| `--pad SEC` | Respiro extra antes/depois do corte (snap de frase) | 0.8s |
-| `--no-audio-features` | Desativa medição de energia de áudio | áudio on |
-| `--min-score F` | Score mínimo para considerar candidato | 6.0 |
-| `--max-per-10min N` | Máximo de clipes por janela de 10 min (diversidade) | 2 |
-| `--context TEXTO` | Contexto injetado no prompt (ex: "ranked Valorant duo com X") | — |
-| `--examples JSON` | Arquivo few-shot com 2–4 exemplos (ver `examples.json`) | — |
-| `--transcribe-backend B` | `auto` (Vulkan→OpenVINO→CPU), `vulkan`, `openvino` ou `cpu` | env ou `auto` |
-
-Exemplos:
+| `--pad SEC` (0–5) | Respiro antes/depois do corte | 0.8 |
+| `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
+| `--no-captions` | Sem legenda queimada | legenda on |
+| `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
+| `--min-score F` (0–10) | Score mínimo | 6.0 |
+| `--max-per-10min N` (1–20) | Máximo por janela de 10 min | 2 |
+| `--context TEXTO` | Contexto injetado no prompt | — |
+| `--examples JSON` | Few-shot (ver `examples.json`, máx 4) | — |
 
 ```bash
 # calibrado pro seu conteúdo
 python clipper.py live.mp4 --context "ranked Valorant, duo com fulano, humor ácido" \
   --examples examples.json --min-score 6.5 --max-per-10min 2
 
-# corte mais solto, sem análise de áudio (mais rápido)
+# corte mais solto e rápido
 python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 ```
 
-## 4. Como funciona por dentro
+## Ajustando pro seu conteúdo
 
-1. **Transcrição** (local, offline) — backend GPU Intel primeiro (whisper.cpp/Vulkan ou OpenVINO na B580), fallback `faster-whisper` CPU int8 com threads limitados; com cache opcional
-2. **Janelas candidatas**: desliza janela 20–90s com passo 20s sobre a transcrição
-3. **Snap + pad**: ajusta `start/end` para fronteira de palavra mais próxima (±1.5s) e adiciona `--pad` de respiro
-4. **Áudio**: mede energia por janela via `ffmpeg volumedetect` → `alta/media/baixa` + `speech_rate` (palavras/s)
-5. **Scoring**: cada lote de ~6 candidatos vai pra IA (NVIDIA Build) com prompt calibrado + duração/energia/speech_rate + contexto/few-shot; retry 3× com backoff 10/30/60s, clamp 0–10, falha marcada como `failed` (não score 0 silencioso)
-6. **Seleção**: NMS com decaimento — penaliza `score * (1 - 0.8*overlap)` em vez de descartar binário; filtra por `--min-score`; espalha com `--max-per-10min`
-7. **Corte**: `ffmpeg` com seek duplo (coarse `-ss` antes do `-i` + fine `-ss` depois, frame-accurate), `scale+pad` fallback se largura insuficiente, crop 9:16 centralizado na mediana do rosto (clamp [0.25,0.75]), legenda profissional (pausa >0.4s, 32 chars/linha, 2 linhas, 1.0s mínimo, FontSize 16), encode `h264_qsv` (B580) com fallback `libx264`
+- **Sem editar código**: `--context` + `--examples` (2 notas altas + 2 baixas,
+  trechos literais da sua live). Formato em `examples.json` (aceita lista
+  direta `[{...}]`).
+- **IA errando "bom momento"**: ajuste `--context` primeiro; depois few-shot.
+- **Clipes do mesmo trecho**: `--max-per-10min 1` ou suba `--min-score`.
+- **Corte no meio da frase**: `--pad 1.2–1.5`.
+- **Legenda rápida/pequena**: `CAPTION_MIN_DURATION` / `FontSize` em
+  `core/config.py` (padrão 1.0 s / 16).
+- `SEGMENTS_PER_SCORING_CALL` (em `core/config.py`): candidatos por chamada —
+  suba p/ menos requests, desça se a IA "perde o fio".
 
-## 5. Ajustando pro seu conteúdo
+## Diagnóstico
 
-- **Contexto sem editar código**: use `--context` e `--examples examples.json` (copie `examples.json` e troque pelos seus casos reais — 2 de nota alta, 2 de nota baixa). Sem isso, o prompt usa só o critério genérico.
-- **Se a IA está errando o que é "bom momento"**: edite `--context` primeiro; se não bastar, adicione few-shot com trechos literais da sua live.
-- **Se clipes vêm do mesmo trecho de 10 min**: diminua `--max-per-10min` para 1 ou aumente `--min-score`.
-- **Se clipes cortam no meio da frase**: aumente `--pad` para 1.2–1.5.
-- **Se legendas estão rápidas/pequenas**: ajuste `CAPTION_MIN_DURATION` / `FontSize` no topo de `clipper.py` (padrão: 1.0s / 16, antes era 0.5s / 14).
-- `SEGMENTS_PER_SCORING_CALL` controla candidatos por chamada de API — aumente pra gastar menos requisições, diminua se a IA "perde o fio".
+- **Caiu pra CPU?** A linha `Transcription backend: CPU (<motivo>)` + o campo
+  `transcription` do JSON dizem exatamente por quê.
+- **GPU indisponível?** `python tools/smoke_gpu.py` (exit 2 = motivo impresso);
+  OpenVINO sem device = falta `intel-level-zero`.
+- **Scoring falhou?** `410 Gone` = modelo expirado; `429` = rate limit (backoff
+  cobre); `nvidia_api.failures` no JSON; lote falho = candidatos `failed`
+  (excluídos da seleção, nunca nota 0).
+- **FFmpeg falhou?** `! QSV falhou` → fallback `libx264` automático;
+  `! Falha clipe N` → pula o clipe, o job continua.
+- **Sem candidatos?** Vídeo sem fala (ou VAD removeu tudo) — `segments: 0`.
+- **Disco?** Preflight falha com < 1 GB livre, avisa com < 5 GB.
+- **Interrompeu (Ctrl+C)?** Relatório `interrupted` em `metrics/` com a etapa;
+  temporários se limpam; `pgrep -x ffmpeg` deve voltar vazio.
+- **Original seguro?** Nenhuma saída pode ter o mesmo caminho do vídeo de
+  entrada (clipe ignorado com erro se coincidir).
 
-### Formato do `examples.json`
+## Limitações conhecidas
 
-```json
-{
-  "examples": [
-    {
-      "transcript": "QUE CLUTCH INSANO 1V4",
-      "score": 9.2,
-      "reason": "clutch raro + hype",
-      "title": "CLUTCH 1V4 ABSURDO",
-      "hashtags": "#valorant #clutch #viral"
-    }
-  ]
-}
-```
-
-Também aceita lista direta `[{...}, {...}]`. Máximo 4 exemplos lidos.
-
-## 6. Limitações conhecidas
-
-- **Modelo padrão pode expirar:** slugs do catálogo NVIDIA expiram (ex.:
-  `meta/llama-3.3-70b-instruct`, morto em 2026-08-26 com HTTP 410 — nunca foi a
-  escolha do projeto). O default atual (`z-ai/glm-5.3`) foi verificado vivo em
-  2026-09-18 com chamada real de scoring; se falhar com `Gone`, liste os modelos
-  vivos e ajuste `NIM_MODEL`/`--model`.
-- **Espaço em disco:** o preflight falha se houver < 1 GB livre na pasta de
-  saída e avisa se < 5 GB.
-- **Arquivo original:** nenhuma saída pode sobrescrever o vídeo de entrada
-  (o clipe é ignorado com erro se os caminhos coincidirem).
-- Scoring ainda é majoritariamente textual — energia de áudio ajuda a pegar grito/risada, mas jogada visual 100% silenciosa continua difícil sem visão computacional.
-- Detecção de rosto é Haar Cascade simples — funciona bem com webcam fixa, pode falhar se a câmera sai de cena (fallback: centro).
-- Rate limit do free tier da NVIDIA Build é por minuto — o script já usa lotes + retry com backoff, mas lives de 4h+ ainda levam alguns minutos no scoring.
-- Medição de áudio adiciona ~0.5–1s por candidato (ffmpeg `volumedetect`); use `--no-audio-features` se quiser scoring mais rápido.
-- **Intel Arc:** `faster-whisper` nunca usa a B580 (CTranslate2 é CUDA-only) — por isso existem os backends OpenVINO/Vulkan. Sem o pacote `intel-level-zero`, o OpenVINO enxerga só `CPU` e o programa cai para CPU com aviso explícito. Filtros de vídeo e Haar Cascade continuam na CPU por simplicidade/correção.
+- Scoring é textual + energia: jogada visual silenciosa continua difícil sem
+  visão computacional. É também o gargalo de tempo (reasoning ~1 min/lote).
+- Haar Cascade simples (webcam fixa; fora de cena → centro).
+- Áudio adiciona ~7 s/candidato (`volumedetect`); `--no-audio-features` pula.
+- `faster-whisper` nunca usa Intel GPU (CUDA-only) — por isso o backend Vulkan.
+- Cache por tamanho+mtime: edição que preserve ambos reutiliza cache (use
+  `--force-*`).
+- Sem suite automatizada; Linux (Fedora 44 testado) na prática.
