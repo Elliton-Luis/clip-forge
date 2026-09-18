@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from .models import Word, Segment
 from .video import is_special_token as _is_special, clean_caption_text as _clean_text
+from .config import CLIPPER_TRANSCRIBE_AUDIO_FILTER
 
 CHUNK_SECONDS = 30  # janela nativa do Whisper; 30s a 16kHz mono = ~1MB por chunk
 SAMPLE_RATE = 16000
@@ -31,11 +32,14 @@ def probe_duration(video_path: str) -> float | None:
         return None
 
 
-def audio_chunks(video_path: str, chunk_sec: int = CHUNK_SECONDS):
+def audio_chunks(video_path: str, chunk_sec: int = CHUNK_SECONDS,
+                 audio_filter: str | None = None):
     """Gera paths de wav temporários (16kHz mono), 1 por vez.
 
     Uso: for wav, offset in audio_chunks(...): ...; wav.unlink()
-    Nunca carrega o vídeo/áudio inteiro na RAM.
+    Nunca carrega o vídeo/áudio inteiro na RAM. audio_filter (ex: loudnorm)
+    aplica-se SOMENTE a estes chunks de transcrição — o áudio do vídeo
+    final nunca passa por aqui.
     """
     duration = probe_duration(video_path) or 0
     # fallback: se duração desconhecida, extrai em blocos até o ffmpeg retornar vazio
@@ -47,13 +51,14 @@ def audio_chunks(video_path: str, chunk_sec: int = CHUNK_SECONDS):
             if duration and start >= duration:
                 break
             wav = tmpdir / f"chunk_{idx:04d}.wav"
-            r = subprocess.run(
-                ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                 "-ss", str(start), "-t", str(chunk_sec),
-                 "-i", video_path, "-ar", str(SAMPLE_RATE), "-ac", "1",
-                 "-c:a", "pcm_s16le", str(wav)],
-                capture_output=True, text=True, timeout=120,
-            )
+            cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                   "-ss", str(start), "-t", str(chunk_sec),
+                   "-i", video_path]
+            if audio_filter:
+                cmd += ["-af", audio_filter]
+            cmd += ["-ar", str(SAMPLE_RATE), "-ac", "1",
+                    "-c:a", "pcm_s16le", str(wav)]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if r.returncode != 0 or not wav.exists() or wav.stat().st_size < 1000:
                 if wav.exists():
                     wav.unlink()
@@ -146,6 +151,15 @@ def _whisper_cpp_bin() -> str | None:
     return None
 
 
+def _vad_model() -> Path | None:
+    """Modelo Silero VAD p/ whisper.cpp (--vad). Opcional: sem ele, segue sem VAD."""
+    for cand in (Path("models/ggml-silero-v5.1.2.bin"),
+                 Path.home() / ".cache" / "whisper" / "ggml-silero-v5.1.2.bin"):
+        if cand.exists():
+            return cand
+    return None
+
+
 def transcribe_vulkan(video_path: str, model_size: str = "medium",
                       language: str | None = None) -> list[Segment]:
     """Whisper via binário whisper.cpp (build Vulkan usa a B580). Levanta RuntimeError se falhar."""
@@ -162,14 +176,27 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
         else:
             raise RuntimeError(f"modelo {model} não encontrado — baixe de HuggingFace (ex: ggerganov/whisper.cpp)")
     segments: list[Segment] = []
+    vad = _vad_model()
+    if vad is not None:
+        # VAD do próprio whisper.cpp (Silero): segmenta por fala real,
+        # preserva pausas e evita alucinar em trecho sem voz. Medido em
+        # áudio real: mais tokens de fala e gaps preservados.
+        print(f"   -> VAD ativo ({vad.name})")
+    else:
+        print("   ! modelo VAD ausente (models/ggml-silero-v5.1.2.bin) — sem VAD")
     try:
-        for wav, offset in audio_chunks(video_path):
+        audio_filter = CLIPPER_TRANSCRIBE_AUDIO_FILTER or None
+        if audio_filter:
+            print(f"   -> filtro de áudio p/ transcrição: {audio_filter}")
+        for wav, offset in audio_chunks(video_path, audio_filter=audio_filter):
             # whisper.cpp atual: JSON sai em <input>.wav.json (ou <prefix>.json
             # com -of); tokens reais só com -ojf; flag -nc não existe mais.
             stem = wav.with_suffix("")
             out_json = stem.with_suffix(".json")
             cmd = [binary, "-m", str(model), "-f", str(wav), "-ojf",
                    "-of", str(stem), "-l", language or "auto", "-nt"]
+            if vad is not None:
+                cmd += ["-vm", str(vad), "--vad"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0 or not out_json.exists():
                 raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")
@@ -180,8 +207,10 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
                 raw_tokens = tr.get("tokens", []) or []
                 words = []
                 for w in raw_tokens:
-                    text = (w.get("text") or "").strip()
-                    if not text or _is_special(text):
+                    # Preserva o texto cru (espaço à esquerda = fronteira de
+                    # palavra p/ smart_join); descarta vazios e especiais.
+                    text = w.get("text") or ""
+                    if not text.strip() or _is_special(text):
                         continue
                     words.append(Word(
                         text,

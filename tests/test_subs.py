@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.models import Word
 from core.video import (build_srt, build_ass, is_special_token,
                         clean_caption_text, highlight_words_from_title,
+                        smart_join, build_hook_lines, validate_cues,
+                        render_caption_debug,
                         CAPTION_POP_OPEN, CAPTION_HIGHLIGHT_OPEN,
                         LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H, LAYOUT_BAND)
 
@@ -202,8 +204,156 @@ class TestHighlightAndAnimation(unittest.TestCase):
 
     def test_layout_geometry(self):
         self.assertEqual((LAYOUT_W, LAYOUT_H), (1080, 1920))
-        self.assertGreater(LAYOUT_MAIN_H, LAYOUT_H * 0.7)  # vídeo dominante
+        self.assertGreater(LAYOUT_MAIN_H, LAYOUT_H * 0.6)  # vídeo dominante
         self.assertEqual(LAYOUT_BAND, (LAYOUT_H - LAYOUT_MAIN_H) // 2)
+        self.assertGreaterEqual(LAYOUT_BAND, 300)  # faixas significativas
+
+
+class TestSilencePreserved(unittest.TestCase):
+    """Caso concreto: 'Olhe para a direita' + 3 s de silêncio + 'tem um vaso'."""
+
+    def setUp(self):
+        self.words = [W("Olhe", 10.0, 10.3), W("para", 10.4, 10.6),
+                      W("a", 10.6, 10.7), W("direita", 10.8, 11.5),
+                      W("tem", 14.5, 14.7), W("um", 14.8, 15.0),
+                      W("vaso", 15.1, 15.5)]
+
+    def test_silence_gap_has_no_cue(self):
+        cues = parse_cues(build_srt(self.words, 0.0, 30.0))
+        self.assertEqual(len(cues), 2)
+        self.assertAlmostEqual(cues[0][1], 11.5, places=2)
+        self.assertAlmostEqual(cues[1][0], 14.5, places=2)
+        self.assertIn("DIREITA", cues[0][2])
+        self.assertNotIn("VASO", cues[0][2])
+        self.assertIn("VASO", cues[1][2])
+
+    def test_consecutive_segments_merge(self):
+        words = [W("foi", 20.0, 20.3), W("bom", 20.5, 20.8)]
+        cues = parse_cues(build_srt(words, 0.0, 30.0))
+        self.assertEqual(len(cues), 1)
+
+    def test_cut_starts_mid_segment(self):
+        words = [W("mei", 8.0, 9.0), W("fim", 11.0, 12.0)]
+        cues = parse_cues(build_srt(words, 10.0, 20.0))
+        self.assertTrue(cues)
+        self.assertGreaterEqual(cues[0][0], 0.0)
+        self.assertNotIn("MEI", build_srt(words, 10.0, 20.0))
+
+    def test_cut_ends_mid_segment(self):
+        words = [W("aqui", 18.0, 19.0), W("longe", 21.0, 22.0)]
+        cues = parse_cues(build_srt(words, 10.0, 20.0))
+        for _, e, _ in cues:
+            self.assertLessEqual(e, 10.0 + 1e-6)
+
+    def test_cue_crossing_start_clamped(self):
+        words = [W("corta", 9.5, 10.5)]
+        cues = parse_cues(build_srt(words, 10.0, 20.0))
+        self.assertEqual(len(cues), 1)
+        self.assertAlmostEqual(cues[0][0], 0.0, places=2)
+
+    def test_cue_crossing_end_clamped(self):
+        words = [W("corta", 19.5, 20.5)]
+        cues = parse_cues(build_srt(words, 10.0, 20.0))
+        self.assertEqual(len(cues), 1)
+        self.assertAlmostEqual(cues[0][1], 10.0, places=2)
+
+
+class TestSmartJoin(unittest.TestCase):
+    def test_whisper_cpp_tokens(self):
+        self.assertEqual(smart_join([" dire", "ita"]), "direita")
+        self.assertEqual(smart_join([" Que", " jogada", " insana", "!"]), "Que jogada insana!")
+
+    def test_faster_whisper_words(self):
+        self.assertEqual(smart_join(["Que", "jogada", "insana"]), "Que jogada insana")
+
+    def test_punctuation_and_dash(self):
+        self.assertEqual(smart_join(["portal", "."]), "portal.")
+        self.assertEqual(smart_join(["-", "Vai", "dar"]), "- Vai dar")
+        self.assertEqual(smart_join([" ", "", "oi"]), "oi")
+
+    def test_used_in_cues(self):
+        words = [W(" dire", 10.0, 10.4), W("ita", 10.4, 10.8)]
+        srt = build_srt(words, 0.0, 30.0)
+        self.assertIn("DIREITA", srt)
+        self.assertNotIn("DIRE ITA", srt)
+
+
+class TestHook(unittest.TestCase):
+    def test_hook_present_with_timing(self):
+        words = [W("fala", 20.0, 21.0)]
+        a = build_ass(words, 10.0, 60.0, 1080, 1920, hook_title="Pior escolha da vida")
+        dialogues = [l for l in a.splitlines() if l.startswith("Dialogue")]
+        hook = [d for d in dialogues if ",Hook," in d]
+        self.assertEqual(len(hook), 1)
+        self.assertIn("0:00:00.30,0:00:02.80", hook[0])
+        self.assertIn("ESCOLHA", hook[0])
+
+    def test_no_hook_without_title(self):
+        words = [W("fala", 20.0, 21.0)]
+        for t in ("", None):
+            a = build_ass(words, 10.0, 60.0, 1080, 1920, hook_title=t)
+            self.assertNotIn(",Hook,", a)
+
+    def test_no_hook_on_short_clip(self):
+        words = [W("fala", 10.5, 11.0)]
+        a = build_ass(words, 10.0, 12.0, 1080, 1920, hook_title="Titulo Longo Aqui")
+        self.assertNotIn(",Hook,", a)
+
+    def test_hook_max_three_lines(self):
+        lines = build_hook_lines("Essa foi a pior escolha da minha vida inteira mesmo")
+        self.assertLessEqual(len(lines), 3)
+        self.assertTrue(all(len(l) <= 18 for l in lines))
+
+
+class TestDoubleValidation(unittest.TestCase):
+    def test_clean_cues_no_warnings(self):
+        words = [W("a", 11.0, 11.4), W("b", 11.5, 12.0)]
+        cues = [(1.0, 1.4, "A"), (1.5, 2.0, "B")]
+        self.assertEqual(validate_cues(words, 10.0, 20.0, cues), [])
+
+    def test_negative_and_overflow_warned(self):
+        cues = [(-0.5, 0.5, "X"), (9.0, 12.0, "Y"), (5.0, 4.0, "Z")]
+        warns = validate_cues([], 10.0, 20.0, cues)
+        self.assertEqual(len(warns), 3)
+
+    def test_uncovered_word_warned(self):
+        words = [W("perdida", 15.0, 15.5)]
+        warns = validate_cues(words, 10.0, 20.0, [(0.0, 1.0, "OUTRA")])
+        self.assertTrue(any("perdida" in w for w in warns))
+
+    def test_debug_report_sections(self):
+        words = [W("Olhe", 10.0, 10.3), W("vaso", 14.5, 15.0)]
+        cues = [(0.0, 0.3, "OLHE"), (4.5, 5.0, "VASO")]
+        txt = render_caption_debug("clip", 10.0, 20.0, words, cues, [])
+        for section in ("TRANSCRIÇÃO ORIGINAL [ABS]", "TIMESTAMP RELATIVO",
+                        "TIMESTAMP NO ARQUIVO", "CHECAGEM FINAL", "OK:"):
+            self.assertIn(section, txt)
+        self.assertIn("00:01:32", render_caption_debug("c", 92.4, 108.9, [], [], []))
+
+
+class TestMultiSilenceAndLines(unittest.TestCase):
+    def test_multi_silence_three_cues(self):
+        words = [W("um", 0.0, 0.5), W("dois", 5.0, 5.5), W("tres", 12.0, 12.5)]
+        cues = parse_cues(build_srt(words, 0.0, 30.0))
+        self.assertEqual(len(cues), 3)
+        starts = [s for s, _, _ in cues]
+        self.assertAlmostEqual(starts[1] - cues[0][1], 4.0, places=1)
+
+    def test_line_break_timing_split(self):
+        words = [W(f"w{i}", 10.0 + i * 0.5, 10.0 + i * 0.5 + 0.4) for i in range(10)]
+        cues = parse_cues(build_srt(words, 10.0, 30.0))
+        # 10 palavras em 2 linhas → tempos divididos, sem sobreposição invertida
+        self.assertGreaterEqual(len(cues), 2)
+        for s, e, _ in cues:
+            self.assertGreater(e, s)
+
+    def test_segment_only_uniform_words(self):
+        # Sem timestamps individuais: palavras distribuídas cobrem o span.
+        words = [W(f"w{i}", 20.0 + i, 21.0 + i) for i in range(5)]
+        cues = parse_cues(build_srt(words, 10.0, 40.0))
+        self.assertTrue(cues)
+        self.assertGreaterEqual(cues[0][0], 10.0 - 10.0 - 1e-6)
+        self.assertLessEqual(cues[-1][1], 30.0 + 1e-6)
 
 
 if __name__ == "__main__":

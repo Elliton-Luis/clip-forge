@@ -2,6 +2,7 @@
 
 SRP: só renderização. Toda decisão de scoring/seleção fica fora.
 """
+import json
 import math
 import os
 import re
@@ -82,6 +83,30 @@ def _srt_time(t: float) -> str:
     h, m = int(t // 3600), int((t % 3600) // 60)
     s, ms = int(t % 60), int((t - int(t)) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def smart_join(texts: list[str]) -> str:
+    """Junta tokens/palavras respeitando fronteiras reais (determinístico).
+
+    Por que existe: o whisper.cpp emite tokens com espaço à esquerda
+    (" direita" = início de palavra; "ita" = continuação) — " ".join cego
+    produzia "dire ita". faster-whisper já vem sem espaços.
+    Regra: se QUALQUER token traz espaço à esquerda, o lote é estilo
+    whisper.cpp → concatena e normaliza (" direita"+"ita" = "direita");
+    senão, junta com espaço (faster-whisper). Fidelidade > embelezamento.
+    """
+    texts = [t for t in (texts or []) if t and t.strip()]
+    if not texts:
+        return ""
+    if any(t[0].isspace() for t in texts):
+        return re.sub(r"\s+", " ", "".join(texts)).strip()
+    parts: list[str] = []
+    for t in texts:
+        t = t.strip()
+        if parts and not all(ch in ".,!?;:…%‰’”»)]}" for ch in t):
+            parts.append(" ")
+        parts.append(t)
+    return "".join(parts)
 
 
 # Tokens de controle do Whisper (nunca são fala e nunca podem ir p/ legenda).
@@ -179,7 +204,7 @@ def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
             e = s + CAPTION_MIN_DURATION
         if e - s < CAPTION_MIN_DURATION:
             e = s + CAPTION_MIN_DURATION
-        raw = clean_caption_text(" ".join(w.text for w in chunk_words)).upper()
+        raw = clean_caption_text(smart_join([w.text for w in chunk_words])).upper()
         if raw:
             out.append((s, e, raw))
     return out
@@ -245,8 +270,26 @@ CAPTION_HIGHLIGHT_CLOSE = r"{\1c&H00FFFFFF&}"
 CAPTION_POP_OPEN = r"{\fscx92\fscy92\t(0,120,\fscx104\fscy104)\t(120,280,\fscx100\fscy100)}"
 # Composição vertical: canvas 1080x1920, vídeo principal 1080x1400 (73%),
 # faixas de 260 px em cima/embaixo com blur do próprio vídeo.
-LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H = 1080, 1920, 1400
-LAYOUT_BAND = (LAYOUT_H - LAYOUT_MAIN_H) // 2  # 260
+# Composição vertical 9:16: canvas fixo, vídeo principal dominante e
+# centralizado, faixas com blur do próprio vídeo. Para mudar a proporção,
+# ajuste LAYOUT_MAIN_H (altura do vídeo): bandas = (1920 - MAIN_H) / 2.
+# 1400 → bandas de 260 (73% vídeo); 1200 → bandas de 360 (62% vídeo).
+LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H = 1080, 1920, 1200
+LAYOUT_BAND = (LAYOUT_H - LAYOUT_MAIN_H) // 2  # 360
+# Hook de abertura: título do scoring (NUNCA filename fallback — não inventar).
+HOOK_START_SEC = 0.3
+HOOK_END_SEC = 2.8
+HOOK_FONT_SIZE = 68
+HOOK_MAX_CHARS_PER_LINE = 18
+HOOK_MARGIN_V = 320  # top-center, abaixo da faixa superior; some em 2.8s
+
+
+def build_hook_lines(title: str) -> list[str]:
+    """Hook em ≤3 linhas a partir do título do scoring (ou [] se vazio)."""
+    t = (title or "").strip()
+    if not t:
+        return []
+    return _wrap(t.upper(), HOOK_MAX_CHARS_PER_LINE)[:3]
 
 
 def highlight_words_from_title(title: str) -> set:
@@ -278,7 +321,8 @@ def _apply_highlight(line: str, highlight: set | None) -> str:
 
 def build_ass(words: list, clip_start: float, clip_end: float,
               width: int, height: int, font_size: int = CAPTION_FONT_SIZE_VERTICAL,
-              highlight: set | None = None, animate: bool = True) -> str:
+              highlight: set | None = None, animate: bool = True,
+              hook_title: str | None = None) -> str:
     """Gera ASS com PlayRes = dimensões REAIS de saída.
 
     Motivo: sem PlayRes explícito o libass assume 384x288 e escala o estilo
@@ -287,6 +331,8 @@ def build_ass(words: list, clip_start: float, clip_end: float,
     Mesmas garantias de tempo/texto do build_srt (mesmo núcleo).
     highlight: set de palavras (lower) pintadas de amarelo — ver
     highlight_words_from_title. animate: pop discreto por bloco (280 ms).
+    hook_title: título do scoring vira cartela [0.3,2.8] no topo (some
+    depois); vazio = sem hook (nunca usa filename fallback).
     """
     duration = max(0.0, clip_end - clip_start)
     cues = _split_lines(_group_cues(words, clip_start, clip_end), clip_start, duration) \
@@ -306,11 +352,19 @@ def build_ass(words: list, clip_start: float, clip_end: float,
          "MarginL, MarginR, MarginV, Encoding"),
         (f"Style: Clip,{CAPTION_FONT}, {font_size},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
          f"-1,0,0,0,100,100,0,0,1,3,1,2,40,40,{CAPTION_MARGIN_V},1"),
+        (f"Style: Hook,{CAPTION_FONT}, {HOOK_FONT_SIZE},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,"
+         f"-1,0,0,0,100,100,0,0,1,3,1,8,40,40,{HOOK_MARGIN_V},1"),
         "",
         "[Events]",
         ("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
          "Effect, Text"),
     ]
+    hook_lines = build_hook_lines(hook_title or "")
+    if hook_lines and duration > HOOK_END_SEC:
+        text = r"\N".join(_apply_highlight(l, highlight) for l in hook_lines)
+        text = r"{\fad(150,150)}" + text
+        lines.append(f"Dialogue: 0,{_ass_time(HOOK_START_SEC)},{_ass_time(HOOK_END_SEC)},"
+                     f"Hook,,0,0,0,,{text}")
     for cs, ce, text in cues:
         parts = []
         for line in text.split("\n"):
@@ -326,6 +380,105 @@ def _escape_subs(path: str) -> str:
     return path.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
 
 
+def _fmt_ts(t: float) -> str:
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    return f"{h:02d}:{m:02d}:{t % 60:06.3f}"
+
+
+def validate_cues(words: list, clip_start: float, clip_end: float,
+                  cues: list[tuple]) -> list[str]:
+    """Dupla validação: absoluto esperado → relativo → escrito no arquivo.
+
+    Retorna lista de avisos (vazia = ok). Nunca levanta: o pipeline loga e
+    segue (cues inválidas já foram descartadas na construção).
+    """
+    warns: list[str] = []
+    duration = clip_end - clip_start
+    for cs, ce, text in cues:
+        if not (cs >= 0):
+            warns.append(f"cue negativa: cs={cs:.3f} (clip {clip_start:.3f})")
+        if not (ce > cs):
+            warns.append(f"cue vazia/invertida: [{cs:.3f},{ce:.3f}] {text[:30]!r}")
+        if ce > duration + 1e-6:
+            warns.append(f"cue além do fim: ce={ce:.3f} > dur={duration:.3f}")
+    for w in words:
+        if w.end <= clip_start or w.start >= clip_end:
+            continue
+        # Palavra em tempo RELATIVO (abs - clip_start) contra cues relativas.
+        rs, re_ = w.start - clip_start, w.end - clip_start
+        covered = any(cs <= rs + 1e-6 and re_ - 1e-6 <= ce
+                      or (cs <= rs + 1e-6 <= ce) or (cs <= re_ - 1e-6 <= ce)
+                      for cs, ce, _ in cues)
+        if not covered and w.text.strip() and not is_special_token(w.text):
+            warns.append(f"palavra sem cobertura: {w.text.strip()!r} "
+                         f"[{w.start:.3f},{w.end:.3f}]")
+    return warns
+
+
+def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
+                         words: list, cues: list[tuple],
+                         warnings: list[str]) -> str:
+    """Texto do caption-debug.txt (§2 do diagnóstico): ABS → REL → CAP."""
+    L = [f"CAPTION DEBUG — {clip_name}",
+         f"Clip: {_fmt_ts(clip_start)} → {_fmt_ts(clip_end)}",
+         "", "TRANSCRIÇÃO ORIGINAL [ABS]"]
+    for w in sorted(words, key=lambda x: x.start):
+        if w.end > clip_start and w.start < clip_end and w.text.strip():
+            L.append(f"[ABS] {_fmt_ts(w.start)} → {_fmt_ts(w.end)}  {w.text.strip()!r}")
+    L += ["", "TIMESTAMP RELATIVO AO CLIP [REL] (abs - clip_start)"]
+    for w in sorted(words, key=lambda x: x.start):
+        if w.end > clip_start and w.start < clip_end and w.text.strip():
+            L.append(f"[REL] {_fmt_ts(w.start - clip_start)} → {_fmt_ts(w.end - clip_start)}  "
+                     f"{w.text.strip()!r}")
+    L += ["", "TIMESTAMP NO ARQUIVO DE LEGENDA [CAP]"]
+    for cs, ce, text in cues:
+        flat = text.replace("\n", " / ")
+        L += [f"[CAP] {_fmt_ts(cs)} → {_fmt_ts(ce)}  {flat!r}",
+              f"      abs esperado: {_fmt_ts(clip_start + cs)} → {_fmt_ts(clip_start + ce)}"]
+    L += ["", "CHECAGEM FINAL"]
+    if not warnings:
+        L.append("OK: sem divergências (rel>=0, fim> início, dentro da duração).")
+    else:
+        L += [f"AVISO: {x}" for x in warnings]
+    return "\n".join(L) + "\n"
+
+
+def write_human_transcript(segments: list, path) -> None:
+    """Transcrição legível [start → end] + texto (uma por segmento)."""
+    lines = []
+    for s in segments:
+        lines.append(f"[{_fmt_ts(s.start)} → {_fmt_ts(s.end)}]")
+        lines.append((s.text or "").strip())
+        lines.append("")
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str) -> None:
+    """Artefatos de --debug-captions em debug/<clip>/ (só nesse modo)."""
+    d = Path(debug_dir) / Path(out_path).stem
+    d.mkdir(parents=True, exist_ok=True)
+    ext = ".ass" if suffix == ".ass" else ".srt"
+    (d / f"captions{ext}").write_text(subs, encoding="utf-8")
+    if suffix == ".ass":
+        (d / "captions.srt").write_text(
+            build_srt(c.words, c.start, c.end), encoding="utf-8")
+    words = sorted(c.words, key=lambda w: w.start)
+    (d / "transcript-words.json").write_text(
+        json.dumps(
+            [{"text": w.text, "start": w.start, "end": w.end} for w in words],
+            ensure_ascii=False, indent=2), encoding="utf-8")
+    duration = max(0.0, c.end - c.start)
+    cues = _split_lines(_group_cues(c.words, c.start, c.end), c.start, duration) \
+        if duration > 0 else []
+    warns = validate_cues(c.words, c.start, c.end, cues)
+    (d / "caption-debug.txt").write_text(
+        render_caption_debug(Path(out_path).stem, c.start, c.end,
+                             c.words, cues, warns), encoding="utf-8")
+    for w in warns:
+        print(f"   ! legenda [{Path(out_path).stem}]: {w}")
+
+
 def _video_encoder() -> tuple[str, list[str]]:
     """Escolhe encoder: h264_qsv (sonda funcional 1x, cacheada) senão libx264."""
     from . import intel as intel_hw
@@ -334,7 +487,8 @@ def _video_encoder() -> tuple[str, list[str]]:
     return "libx264", ["-preset", "veryfast", "-crf", "20"]
 
 
-def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions: bool) -> None:
+def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions: bool,
+        debug_dir: Path | str | None = None) -> None:
     duration = c.duration
     filters: list[str] = []
 
@@ -387,8 +541,9 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
             # Destaque: palavras do título (determinístico, sem LLM).
             hl = highlight_words_from_title(c.title)
             if out_w and out_h:
+                # Hook = título do scoring (sem LLM extra); vazio = sem hook.
                 subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size,
-                                 highlight=hl)
+                                 highlight=hl, hook_title=c.title or None)
                 suffix = ".ass"
             else:
                 subs = build_srt(c.words, c.start, c.end)
@@ -406,6 +561,8 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                         f"subtitles='{esc}':force_style='FontName=Montserrat ExtraBold,FontSize=22,"
                         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=120'"
                     )
+                if debug_dir is not None:
+                    _write_clip_debug(debug_dir, out_path, c, subs, suffix)
         vf = ",".join(filters)
         vcodec, vextra = _video_encoder()
         # QSV sem flag -hwaccel (sonda mostrou que -hwaccel qsv quebra o init
