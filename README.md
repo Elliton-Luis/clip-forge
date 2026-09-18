@@ -33,7 +33,7 @@ clipper tem backends próprios que usam a B580, com CPU como fallback explícito
 
 ```bash
 # Fedora: drivers para a B580 expor GPU ao OpenVINO/ffmpeg
-sudo dnf install -y intel-opencl-icd level-zero intel-media-driver
+sudo dnf install -y intel-level-zero intel-media-driver
 # verifique: vainfo | grep -i intel ; python3 -c "import openvino as ov; print(ov.Core().available_devices)"
 # esperado: ['CPU', 'GPU']
 
@@ -49,6 +49,7 @@ Seleção do backend (`--transcribe-backend` ou `CLIPPER_TRANSCRIBE_BACKEND`):
 | Valor | Efeito |
 |---|---|
 | `auto` (padrão) | whisper.cpp/Vulkan → OpenVINO GPU → CPU (fallback com motivo impresso) |
+| `gpu` | **Exige GPU**: usa Vulkan ou OpenVINO/GPU; se indisponível, **falha claramente** (sem fallback) |
 | `openvino` | Só OpenVINO GPU; se indisponível, CPU com motivo |
 | `vulkan` | Só whisper.cpp; se indisponível, CPU com motivo |
 | `cpu` | Sempre CPU (`faster-whisper` int8, threads limitados) |
@@ -79,6 +80,30 @@ seu hardware (`time`, `intel_gpu_top`, `htop`).
 chunks de 30 s (~1 MB cada, 1 por vez, temporários removidos) e a transcrição
 processa chunk a chunk. Com 16 GB de RAM o uso fica em poucos GB.
 
+### Smoke test da GPU (sem vídeos reais)
+
+```bash
+python tools/smoke_gpu.py
+```
+
+Responde objetivamente (`GPU detected`, `Backend`, `Model loaded`,
+`Inference`, `Device used`; exit 0 = inferência OK na GPU, exit 2 =
+indisponível com motivo). Estado atual nesta máquina: GPU detectada, mas
+OpenVINO sem device GPU — falta o runtime de usuário Intel. **Nada é
+instalado automaticamente**; se for o seu caso:
+
+```bash
+sudo dnf install -y intel-level-zero intel-media-driver
+python tools/smoke_gpu.py   # deve passar a mostrar Backend: openvino + Inference: SUCCESS
+```
+
+### Métricas de GPU Intel
+
+O relatório registra o device detectado; utilização/VRAM ficam `null` quando
+indisponíveis. Motivo: `nvidia-smi` não serve para a B580, `intel_gpu_top`
+não está instalado e o sysfs do driver `xe` não expõe contadores confiáveis
+de utilização/VRAM — `null` honesto em vez de número inventado.
+
 ## 2. Pegar uma chave grátis da NVIDIA Build
 
 1. Crie uma conta em https://build.nvidia.com
@@ -88,7 +113,7 @@ processa chunk a chunk. Com 16 GB de RAM o uso fica em poucos GB.
 
 ```bash
 export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
-export NIM_MODEL="meta/llama-3.3-70b-instruct"   # ajuste conforme o catálogo
+export NIM_MODEL="nvidia/nemotron-3-super-120b-a12b"   # default atual; ajuste conforme o catálogo
 ```
 
 ### Qual modelo escolher
@@ -99,9 +124,14 @@ qualidade de raciocínio/instrução, não tamanho bruto:
 
 | Modelo | Quando usar |
 |---|---|
+| `nvidia/nemotron-3-super-120b-a12b` (padrão atual, verificado vivo em 2026-09-18) | Padrão testado, bom equilíbrio |
 | `zai/glm-5-3` (confirme o slug no site) | Melhor opção — tem reasoning nativo, ajuda bastante a "sentir" o que é engraçado/hype |
-| `nvidia/nemotron-3-super-120b-a12b` | Alternativa mais testada/popular, 1M de contexto, bom equilíbrio |
 | `mistralai/mistral-nemotron` | Mais leve, use se os de cima estiverem instáveis no free tier |
+
+> O modelo padrão anterior (`meta/llama-3.3-70b-instruct`) entrou em EOL em
+> 2026-08-26 (HTTP 410). Slugs do catálogo expiram — se o scoring falhar com
+> `Gone`, liste os modelos vivos (`GET https://integrate.api.nvidia.com/v1/models`)
+> e ajuste `NIM_MODEL`/`--model`.
 
 > O nome exato do modelo no catálogo muda com frequência — sempre confira
 > o slug certo no code snippet da página do modelo em build.nvidia.com
@@ -244,11 +274,10 @@ Também aceita lista direta `[{...}, {...}]`. Máximo 4 exemplos lidos.
 
 ## 6. Limitações conhecidas
 
-- **Modelo padrão pode expirar:** o `NIM_MODEL` padrão (`meta/llama-3.3-70b-instruct`)
-  saiu do ar em 2026-08-26 (API retorna 410). Se o scoring falhar com `Gone`,
-  passe `--model` com um slug vivo (liste em
-  `https://integrate.api.nvidia.com/v1/models`; ex. testado:
-  `nvidia/nemotron-3-super-120b-a12b`).
+- **Modelo padrão pode expirar:** slugs do catálogo NVIDIA expiram (o anterior,
+  `meta/llama-3.3-70b-instruct`, morreu em 2026-08-26 com HTTP 410). O default
+  atual (`nvidia/nemotron-3-super-120b-a12b`) foi verificado vivo em 2026-09-18;
+  se o scoring falhar com `Gone`, liste os modelos vivos e ajuste `NIM_MODEL`/`--model`.
 - **Espaço em disco:** o preflight falha se houver < 1 GB livre na pasta de
   saída e avisa se < 5 GB.
 - **Arquivo original:** nenhuma saída pode sobrescrever o vídeo de entrada
@@ -257,4 +286,4 @@ Também aceita lista direta `[{...}, {...}]`. Máximo 4 exemplos lidos.
 - Detecção de rosto é Haar Cascade simples — funciona bem com webcam fixa, pode falhar se a câmera sai de cena (fallback: centro).
 - Rate limit do free tier da NVIDIA Build é por minuto — o script já usa lotes + retry com backoff, mas lives de 4h+ ainda levam alguns minutos no scoring.
 - Medição de áudio adiciona ~0.5–1s por candidato (ffmpeg `volumedetect`); use `--no-audio-features` se quiser scoring mais rápido.
-- **Intel Arc:** `faster-whisper` nunca usa a B580 (CTranslate2 é CUDA-only) — por isso existem os backends OpenVINO/Vulkan. Sem `intel-opencl-icd`/`level-zero`, o OpenVINO enxerga só `CPU` e o programa cai para CPU com aviso explícito. Filtros de vídeo e Haar Cascade continuam na CPU por simplicidade/correção.
+- **Intel Arc:** `faster-whisper` nunca usa a B580 (CTranslate2 é CUDA-only) — por isso existem os backends OpenVINO/Vulkan. Sem o pacote `intel-level-zero`, o OpenVINO enxerga só `CPU` e o programa cai para CPU com aviso explícito. Filtros de vídeo e Haar Cascade continuam na CPU por simplicidade/correção.
