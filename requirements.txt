@@ -1,6 +1,7 @@
 faster-whisper>=1.0.0
 openai>=1.30.0
 opencv-python>=4.9.0
+psutil>=5.9.0
 
 # --- Intel Arc (B580) — opcional, só para transcrição na GPU ---
 # faster-whisper/CTranslate2 é CUDA-only e nunca usa Intel GPU.
