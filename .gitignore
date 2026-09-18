@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+.cache/
+cortes/
+metrics/*.json
+videos/
+*.mp4
+*.mkv

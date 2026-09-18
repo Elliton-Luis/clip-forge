@@ -1,0 +1,10 @@
+faster-whisper>=1.0.0
+openai>=1.30.0
+opencv-python>=4.9.0
+
+# --- Intel Arc (B580) — opcional, só para transcrição na GPU ---
+# faster-whisper/CTranslate2 é CUDA-only e nunca usa Intel GPU.
+# Para transcrever na B580, instale UM dos dois:
+#   A) OpenVINO (recomendado, pip puro): pip install openvino optimum-intel transformers soundfile
+#   B) whisper.cpp com Vulkan (binário externo + modelo ggml; ver README § Intel Arc)
+openvino>=2024.0; sys_platform == "linux"
