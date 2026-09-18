@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from .models import Word, Segment
+from .video import is_special_token as _is_special, clean_caption_text as _clean_text
 
 CHUNK_SECONDS = 30  # janela nativa do Whisper; 30s a 16kHz mono = ~1MB por chunk
 SAMPLE_RATE = 16000
@@ -174,13 +175,23 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
                 raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")
             data = json.loads(out_json.read_text(encoding="utf-8"))
             for tr in data.get("transcription", []):
-                text = (tr.get("text") or "").strip()
+                # Filtra na origem: tokens de controle ([eot], [sot], [_EOT_]...)
+                # nunca viram Word; o texto do segmento é limpo do que restar.
+                raw_tokens = tr.get("tokens", []) or []
+                words = []
+                for w in raw_tokens:
+                    text = (w.get("text") or "").strip()
+                    if not text or _is_special(text):
+                        continue
+                    words.append(Word(
+                        text,
+                        offset + float(w.get("offsets", {}).get("from", 0)) / 1000.0,
+                        offset + float(w.get("offsets", {}).get("to", 0)) / 1000.0))
+                text = _clean_text((tr.get("text") or "").strip())
                 s = offset + float(tr.get("offsets", {}).get("from", 0)) / 1000.0
                 e = offset + float(tr.get("offsets", {}).get("to", 0)) / 1000.0
-                words = [Word(w.get("text", "").strip(),
-                              offset + float(w.get("offsets", {}).get("from", 0)) / 1000.0,
-                              offset + float(w.get("offsets", {}).get("to", 0)) / 1000.0)
-                         for w in tr.get("tokens", [])] or _even_words(text, s, e)
+                if not words:
+                    words = _even_words(text, s, e)
                 segments.append(Segment(text=text, start=s, end=e, words=words))
             out_json.unlink(missing_ok=True)
     except RuntimeError:
