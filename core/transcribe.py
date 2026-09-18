@@ -20,12 +20,12 @@ from . import backends as gpu_backends
 
 
 def _apply_process_limits() -> None:
-    try:
-        import resource
-        limit = CLIPPER_RAM_LIMIT_GB * 1024**3
-        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-    except Exception:
-        pass
+    # Auditoria (RAM): RLIMIT_AS foi removido de propósito. Ele limita ESPAÇO
+    # VIRTUAL (mmaps, stacks, libs), não RSS — num run longo (1h40) isso causa
+    # MemoryError em pontos aleatórios (ex: OpenVINO/torch) sem proteger a RAM
+    # de verdade (Linux ignora RLIMIT_RSS), e o limite é herdado pelos filhos
+    # ffmpeg. Proteção real: modelo int8, threads limitados, áudio em chunks
+    # (backends GPU) ou decode único de ~0.4 GB (CPU, 100 min).
     os.environ.setdefault("OMP_NUM_THREADS", str(CLIPPER_CPU_THREADS))
     os.environ.setdefault("MKL_NUM_THREADS", str(CLIPPER_CPU_THREADS))
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(CLIPPER_CPU_THREADS))
