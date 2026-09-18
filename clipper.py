@@ -55,8 +55,9 @@ def main() -> None:
     p.add_argument("--context", default=None, help="Contexto da live injetado no prompt")
     p.add_argument("--examples", default=None, help="Caminho para examples.json few-shot")
     p.add_argument("--transcribe-backend", default=CLIPPER_TRANSCRIBE_BACKEND,
-                   choices=["auto", "vulkan", "openvino", "cpu"],
-                   help="Backend de transcrição (padrão: env CLIPPER_TRANSCRIBE_BACKEND ou auto)")
+                   choices=["auto", "gpu", "vulkan", "openvino", "cpu"],
+                   help="Backend de transcrição (padrão: env CLIPPER_TRANSCRIBE_BACKEND ou auto; "
+                        "'gpu' exige GPU e falha claramente se indisponível)")
     args = p.parse_args()
 
     video = str(Path(args.video).expanduser())
@@ -87,6 +88,7 @@ def main() -> None:
         cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
         fp = fingerprint(video) if cache_dir else None
 
+        stage = "transcribe"
         with metrics.stage("transcribe"):
             segments = transcribe(video, cache_dir=cache_dir, force=args.force_retranscribe,
                                   backend=args.transcribe_backend, metrics=metrics)

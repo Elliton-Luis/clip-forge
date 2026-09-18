@@ -27,7 +27,7 @@ def check(video_path: str, out_dir: Path, top_n: int,
         else:
             print("GPU detected: none")
         print(f"Transcription backend: {d['transcribe_backend'].upper()}"
-              + (f" ({d['transcribe_reason']})" if d["transcribe_backend"] == "cpu" else ""))
+              + (f" ({d['transcribe_reason']})" if d["transcribe_backend"] in ("cpu", "unavailable") else ""))
         print(f"Video acceleration: {d['video_encoder']}")
     except Exception:
         pass

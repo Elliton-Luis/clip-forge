@@ -93,7 +93,7 @@ def transcribe_openvino(video_path: str, model_size: str = "medium",
     except Exception as e:
         raise RuntimeError(f"OpenVINO não enumera devices ({e})")
     if "GPU" not in devs:
-        raise RuntimeError(f"OpenVINO sem device GPU (visíveis: {devs}) — instale intel-opencl-icd/level-zero")
+        raise RuntimeError(f"OpenVINO sem device GPU (visíveis: {devs}) — instale o pacote intel-level-zero (dnf install -y intel-level-zero)")
     try:
         from optimum.intel.openvino import OVModelForSpeechSeq2Seq  # type: ignore
         from transformers import WhisperProcessor  # type: ignore

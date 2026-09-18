@@ -113,6 +113,26 @@ def resolve_transcribe_backend(requested: str) -> tuple[str, str]:
     requested = (requested or "auto").lower()
     if requested == "cpu":
         return "cpu", "backend explícito 'cpu'"
+    if requested == "gpu":
+        # Exige GPU de verdade: tenta os backends reais, sem fallback
+        # silencioso. Retorna "unavailable" (não é backend válido) quando
+        # nada presta — o orquestrador levanta erro claro em vez de usar CPU.
+        if has_whisper_cpp():
+            return "vulkan", "modo 'gpu': whisper.cpp com Vulkan detectado"
+        if has_openvino_gpu():
+            return "openvino", "modo 'gpu': OpenVINO com device GPU"
+        if has_intel_gpu() and has_openvino():
+            detail = ("GPU Intel presente mas OpenVINO não expõe device GPU "
+                      "(falta o pacote intel-level-zero?)")
+        elif has_intel_gpu():
+            detail = ("GPU Intel presente mas nenhum runtime de inferência "
+                      "(whisper.cpp / OpenVINO+GPU) disponível")
+        elif has_openvino():
+            detail = "OpenVINO instalado mas nenhuma GPU Intel detectada"
+        else:
+            detail = ("nenhuma GPU Intel detectada e nenhum runtime "
+                      "(whisper.cpp / OpenVINO) instalado")
+        return "unavailable", f"modo 'gpu' exige GPU, indisponível: {detail}"
     if requested in ("vulkan", "whisper.cpp", "whispercpp"):
         if has_whisper_cpp():
             return "vulkan", "binário whisper.cpp presente"
@@ -129,7 +149,7 @@ def resolve_transcribe_backend(requested: str) -> tuple[str, str]:
     if has_openvino_gpu():
         return "openvino", "auto: OpenVINO com device GPU"
     if has_intel_gpu() and has_openvino():
-        return "cpu", "auto: GPU Intel presente mas OpenVINO não expõe device GPU — verifique intel-opencl-icd / level-zero"
+        return "cpu", "auto: GPU Intel presente mas OpenVINO não expõe device GPU — verifique o pacote intel-level-zero"
     if has_intel_gpu():
         return "cpu", "auto: GPU Intel presente mas nenhum runtime de inferência (whisper.cpp/OpenVINO+GPU) disponível"
     return "cpu", "auto: nenhuma GPU Intel detectada"

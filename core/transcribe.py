@@ -86,7 +86,24 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
     print(f"Transcription backend: {info['transcribe_backend'].upper()}"
           + (f" ({info['transcribe_reason']})" if info["transcribe_backend"] == "cpu" else ""))
 
-    order = [info["transcribe_backend"]] if info["transcribe_backend"] != "cpu" else []
+    order = [info["transcribe_backend"]] if info["transcribe_backend"] not in ("cpu", "unavailable") else []
+    require_gpu = requested == "gpu"
+    if info["transcribe_backend"] == "unavailable":
+        # Modo 'gpu': nunca cair para CPU em silêncio — falha clara e relatório.
+        err = (f"GPU transcription requested (--transcribe-backend gpu) but unavailable: "
+               f"{info['transcribe_reason']}. Use 'auto' para fallback explícito à CPU "
+               f"ou instale o runtime (dnf install -y intel-level-zero / whisper.cpp).")
+        if metrics is not None:
+            try:
+                metrics.set_transcription(
+                    model=WHISPER_MODEL_SIZE, backend_requested=requested,
+                    backend_used=None, device=None, gpu=info.get("gpu_name") or None,
+                    time_sec=0.0, segments=None, fallback=False,
+                    tried_backends=[], error=f"RuntimeError: {err}",
+                )
+            except Exception:
+                pass
+        raise RuntimeError(err)
     if requested == "auto":
         # tenta vulkan e openvino nesta ordem se disponíveis, 1x cada
         for cand in ("vulkan", "openvino"):
@@ -117,8 +134,11 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
         except RuntimeError as e:
             last_err = f"{type(e).__name__}: {e}"
             print(f"GPU transcription backend unavailable: {e}")
-            print("Falling back to CPU." if b != "cpu" else "CPU backend falhou.")
+            if b != "cpu" and not require_gpu:
+                print("Falling back to CPU.")
             if b == "cpu":
+                print("CPU backend falhou.")
+            if b == "cpu" or require_gpu:
                 if metrics is not None:
                     try:
                         metrics.set_transcription(
