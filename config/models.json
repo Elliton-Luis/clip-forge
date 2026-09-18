@@ -1,0 +1,58 @@
+{
+  "models": [
+    {
+      "id": "nvidia/nemotron-3-super-120b-a12b",
+      "name": "Nemotron 3 Super",
+      "category": "reasoning",
+      "description": "Padrão do projeto; mesmo momento que o GLM, bem mais rápido"
+    },
+    {
+      "id": "z-ai/glm-5.3",
+      "name": "GLM 5.3",
+      "category": "reasoning",
+      "description": "Reasoning nativo, melhor para hype/humor; scoring mais lento"
+    },
+    {
+      "id": "z-ai/glm-5.3-flash",
+      "name": "GLM 5.3 Flash",
+      "category": "reasoning",
+      "description": "Variante mais rápida do GLM 5.3"
+    },
+    {
+      "id": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "name": "Nemotron 3.5 Lightning",
+      "category": "reasoning",
+      "description": "Rápido e leve da família Nemotron"
+    },
+    {
+      "id": "nvidia/nemotron-3-ultra-550b-a55b",
+      "name": "Nemotron 3 Ultra",
+      "category": "reasoning",
+      "description": "Maior capacidade; mais lento e limitado no free tier"
+    },
+    {
+      "id": "mistralai/mistral-nemotron",
+      "name": "Mistral Nemotron",
+      "category": "chat",
+      "description": "Mais leve; alternativa se os acima instabilizarem"
+    },
+    {
+      "id": "openai/gpt-oss-20b",
+      "name": "GPT OSS 20B",
+      "category": "chat",
+      "description": "Modelo aberto pequeno; rápido"
+    },
+    {
+      "id": "moonshotai/kimi-k3",
+      "name": "Kimi K3",
+      "category": "chat",
+      "description": "Alternativa da Moonshot"
+    },
+    {
+      "id": "google/gemma-4-31b-it",
+      "name": "Gemma 4 31B",
+      "category": "chat",
+      "description": "Alternativa instrucional do Google"
+    }
+  ]
+}

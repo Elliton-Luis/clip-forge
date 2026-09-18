@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-clipper.py — orquestrador fino (CLI). Toda lógica vive em core/*.
+clipper.py — orquestrador fino (CLI + TUI). Toda lógica vive em core/*.
+
+Duas formas de operar (mesma configuração, mesmo pipeline):
+  python clipper.py video.mp4 --out cortes/   # CLI tradicional
+  python clipper.py                            # TUI interativa (terminal)
 
 Mantém compatibilidade: `python clipper.py video.mp4 --out cortes/`
 """
 import argparse
 import json
+import shlex
 import sys
 import time
 from pathlib import Path
@@ -37,9 +42,15 @@ from core.video import cut as cut_clip_alias  # compat
 from core.video import sanitize_filename as _sanitize_filename  # compat
 
 
-def main() -> None:
+# ----------------------------------------------------------------------------
+# 1. Parsing / entrada
+# ----------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Gerador automático de cortes para lives/gameplay.")
-    p.add_argument("video", help="Caminho do vídeo de entrada (mp4, mkv, etc.)")
+    # nargs="?" → sem vídeo abre a TUI; com vídeo, CLI tradicional idêntica.
+    p.add_argument("video", nargs="?", default=None,
+                   help="Caminho do vídeo de entrada (mp4, mkv, etc.). Omitido = interface interativa")
     p.add_argument("--out", default="cortes", help="Pasta de saída (padrão: ./cortes)")
     p.add_argument("--top", type=int, default=8, help="Quantos clipes gerar (padrão: 8)")
     p.add_argument("--model", default=DEFAULT_MODEL, help=f"Modelo NIM (padrão: {DEFAULT_MODEL})")
@@ -58,64 +69,165 @@ def main() -> None:
                    choices=["auto", "gpu", "vulkan", "openvino", "cpu"],
                    help="Backend de transcrição (padrão: env CLIPPER_TRANSCRIBE_BACKEND ou auto; "
                         "'gpu' exige GPU e falha claramente se indisponível)")
-    args = p.parse_args()
+    p.add_argument("--debug-captions", action="store_true",
+                   help="Diagnóstico de legendas: preserva ASS/SRT/transcript/diagnóstico em debug/")
+    return p
 
-    video = str(Path(args.video).expanduser())
-    out_dir = Path(args.out)
 
-    if not (0 <= args.pad <= 5):
+def parse_cli(argv=None):
+    return build_parser().parse_args(argv)
+
+
+# ----------------------------------------------------------------------------
+# 2. Configuração (dict canônico — CLI e TUI produzem exatamente este formato)
+# ----------------------------------------------------------------------------
+
+CONFIG_FIELDS = (
+    "video", "out", "top", "model", "no_vertical", "no_captions",
+    "cache_dir", "force_retranscribe", "force_rescore", "pad",
+    "no_audio_features", "min_score", "max_per_10min", "context",
+    "examples", "transcribe_backend", "debug_captions",
+)
+
+
+def default_config() -> dict:
+    """Configuração com os mesmos defaults da CLI (sem vídeo)."""
+    args = parse_cli([])
+    cfg = config_from_args(args)
+    cfg["video"] = ""
+    return cfg
+
+
+def config_from_args(args) -> dict:
+    """argparse.Namespace → dict canônico. Sem validação (ver validate_config)."""
+    return {
+        "video": str(Path(args.video).expanduser()) if args.video else "",
+        "out": args.out,
+        "top": args.top,
+        "model": args.model,
+        "no_vertical": bool(args.no_vertical),
+        "no_captions": bool(args.no_captions),
+        "cache_dir": args.cache_dir,
+        "force_retranscribe": bool(args.force_retranscribe),
+        "force_rescore": bool(args.force_rescore),
+        "pad": args.pad,
+        "no_audio_features": bool(args.no_audio_features),
+        "min_score": args.min_score,
+        "max_per_10min": args.max_per_10min,
+        "context": args.context,
+        "examples": args.examples,
+        "transcribe_backend": args.transcribe_backend,
+        "debug_captions": bool(args.debug_captions),
+    }
+
+
+def validate_config(cfg: dict) -> None:
+    """Validação pré-métricas, idêntica à CLI original (mensagens iguais).
+
+    Existência do vídeo e --top ficam com o preflight (que gera relatório),
+    como antes. A TUI valida o resto no formulário antes de executar.
+    """
+    if not (0 <= cfg["pad"] <= 5):
         sys.exit("--pad deve estar entre 0 e 5")
-    if not (0 <= args.min_score <= 10):
+    if not (0 <= cfg["min_score"] <= 10):
         sys.exit("--min-score deve estar entre 0 e 10")
-    if not (1 <= args.max_per_10min <= 20):
+    if not (1 <= cfg["max_per_10min"] <= 20):
         sys.exit("--max-per-10min deve estar entre 1 e 20")
+
+
+def cli_command(cfg: dict) -> str:
+    """Configuração canônica → comando CLI equivalente (para aprendizado)."""
+    parts = ["python", "clipper.py", cfg["video"]]
+    if cfg["out"] != "cortes":
+        parts += ["--out", cfg["out"]]
+    if cfg["top"] != 8:
+        parts += ["--top", str(cfg["top"])]
+    parts += ["--model", cfg["model"]]
+    if cfg["no_vertical"]:
+        parts.append("--no-vertical")
+    if cfg["no_captions"]:
+        parts.append("--no-captions")
+    if cfg["cache_dir"]:
+        parts += ["--cache-dir", cfg["cache_dir"]]
+    if cfg["force_retranscribe"]:
+        parts.append("--force-retranscribe")
+    if cfg["force_rescore"]:
+        parts.append("--force-rescore")
+    if cfg["pad"] != DEFAULT_PAD_SECONDS:
+        parts += ["--pad", str(cfg["pad"])]
+    if cfg["no_audio_features"]:
+        parts.append("--no-audio-features")
+    if cfg["min_score"] != DEFAULT_MIN_SCORE:
+        parts += ["--min-score", str(cfg["min_score"])]
+    if cfg["max_per_10min"] != DEFAULT_MAX_PER_10MIN:
+        parts += ["--max-per-10min", str(cfg["max_per_10min"])]
+    if cfg["context"]:
+        parts += ["--context", cfg["context"]]
+    if cfg["examples"]:
+        parts += ["--examples", cfg["examples"]]
+    if cfg["transcribe_backend"] != CLIPPER_TRANSCRIBE_BACKEND:
+        parts += ["--transcribe-backend", cfg["transcribe_backend"]]
+    if cfg.get("debug_captions"):
+        parts.append("--debug-captions")
+    return " ".join(shlex.quote(x) for x in parts)
+
+
+# ----------------------------------------------------------------------------
+# 3. Execução (pipeline existente, inalterado — só lê o dict)
+# ----------------------------------------------------------------------------
+
+def run_pipeline(cfg: dict) -> None:
+    video = str(Path(cfg["video"]).expanduser())
+    out_dir = Path(cfg["out"])
+
+    validate_config(cfg)
 
     # Métricas por execução: um relatório JSON por vídeo, mesmo em falha.
     run_args = {
-        "top": args.top, "model": args.model, "transcribe_backend": args.transcribe_backend,
+        "top": cfg["top"], "model": cfg["model"], "transcribe_backend": cfg["transcribe_backend"],
         "whisper_model": WHISPER_MODEL_SIZE, "cpu_threads": CLIPPER_CPU_THREADS,
-        "ffmpeg_threads": CLIPPER_FFMPEG_THREADS, "pad": args.pad,
-        "min_score": args.min_score, "max_per_10min": args.max_per_10min,
-        "vertical": not args.no_vertical, "captions": not args.no_captions,
-        "audio_features": not args.no_audio_features,
+        "ffmpeg_threads": CLIPPER_FFMPEG_THREADS, "pad": cfg["pad"],
+        "min_score": cfg["min_score"], "max_per_10min": cfg["max_per_10min"],
+        "vertical": not cfg["no_vertical"], "captions": not cfg["no_captions"],
+        "audio_features": not cfg["no_audio_features"],
     }
     metrics = ExecutionMetrics(video, run_args).start()
     stage = "preflight"
     try:
         with metrics.stage("preflight"):
-            preflight(video, out_dir, args.top, transcribe_backend=args.transcribe_backend)
+            preflight(video, out_dir, cfg["top"], transcribe_backend=cfg["transcribe_backend"])
 
-        cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
+        cache_dir = Path(cfg["cache_dir"]).expanduser() if cfg["cache_dir"] else None
         fp = fingerprint(video) if cache_dir else None
 
         stage = "transcribe"
         with metrics.stage("transcribe"):
-            segments = transcribe(video, cache_dir=cache_dir, force=args.force_retranscribe,
-                                  backend=args.transcribe_backend, metrics=metrics)
+            segments = transcribe(video, cache_dir=cache_dir, force=cfg["force_retranscribe"],
+                                  backend=cfg["transcribe_backend"], metrics=metrics)
         stage = "candidates"
         with metrics.stage("candidates"):
             candidates = build_candidates(segments)
             if not candidates:
                 sys.exit("Nenhum candidato encontrado (vídeo sem fala?).")
-            candidates = snap_all(candidates, pad=args.pad)
+            candidates = snap_all(candidates, pad=cfg["pad"])
         metrics.set_counts(candidates=len(candidates))
 
         stage = "audio"
         with metrics.stage("audio"):
-            candidates = annotate_audio(video, candidates, enable=not args.no_audio_features)
+            candidates = annotate_audio(video, candidates, enable=not cfg["no_audio_features"])
 
         stage = "scoring"
         with metrics.stage("scoring"):
             candidates = score_candidates(
-                candidates, model=args.model, cache_dir=cache_dir, fingerprint=fp,
-                force=args.force_rescore, context=args.context, examples_path=args.examples,
+                candidates, model=cfg["model"], cache_dir=cache_dir, fingerprint=fp,
+                force=cfg["force_rescore"], context=cfg["context"], examples_path=cfg["examples"],
                 metrics=metrics,
             )
 
         stage = "selection"
         with metrics.stage("selection"):
-            selected = select_top(candidates, args.top, min_score=args.min_score,
-                                  max_per_10min=args.max_per_10min)
+            selected = select_top(candidates, cfg["top"], min_score=cfg["min_score"],
+                                  max_per_10min=cfg["max_per_10min"])
             if not selected:
                 sys.exit("Nenhum clipe passou no corte. Tente --min-score menor.")
         metrics.set_counts(selected=len(selected))
@@ -127,6 +239,15 @@ def main() -> None:
         t_cut = time.time()
         from core import intel as intel_hw
         encoder = intel_hw.best_video_encoder()
+        debug_dir = None
+        if cfg.get("debug_captions"):
+            # Só no modo debug: artefatos por clipe + transcript legível.
+            # Modo normal continua limpando temporários.
+            from core.video import write_human_transcript
+            debug_dir = Path("debug") / Path(video).stem
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            write_human_transcript(segments, debug_dir / "transcript.txt")
+            print(f"   -> debug de legendas em: {debug_dir.resolve()}")
         for i, c in enumerate(selected, start=1):
             name = sanitize_filename(c.title, f"clipe_{i}")
             out = out_dir / f"{i:02d}_{name}.mp4"
@@ -136,7 +257,8 @@ def main() -> None:
                 # destruído. Nunca escreva por cima da entrada.
                 if out.resolve() == Path(video).resolve():
                     raise RuntimeError(f"saída coincide com a entrada ({out}) — clipe ignorado")
-                cut_clip(video, c, out, vertical=not args.no_vertical, captions=not args.no_captions)
+                cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
+                         debug_dir=debug_dir)
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")
                 clips_failed += 1
@@ -211,6 +333,18 @@ def main() -> None:
         except Exception:
             pass
         raise
+
+
+def main() -> None:
+    args = parse_cli()
+    if not args.video:
+        from core import tui as tui_mod
+        cfg = tui_mod.run()
+        if cfg is None:
+            return
+        run_pipeline(cfg)
+        return
+    run_pipeline(config_from_args(args))
 
 
 if __name__ == "__main__":

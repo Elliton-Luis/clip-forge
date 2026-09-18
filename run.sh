@@ -2,6 +2,7 @@
 # run.sh — Atalho para rodar o clipper com padrões sensatos.
 #
 # Uso:
+#   ./run.sh                              # abre a interface interativa (TUI)
 #   ./run.sh video.mkv                    # 8 clipes em cortes/, com cache
 #   ./run.sh video.mkv --top 5            # 5 clipes
 #   ./run.sh video.mkv --out meus_cortes  # outra pasta de saída
@@ -13,8 +14,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ $# -lt 1 ]; then
-    echo "Uso: ./run.sh VIDEO [--top N] [--out DIR] [flags do clipper...]" >&2
-    exit 1
+    # Sem argumentos: interface interativa.
+    if [ -z "${NVIDIA_API_KEY:-}" ] && [ -f .env ]; then
+        set -a; source .env; set +a
+    fi
+    exec python3 clipper.py
 fi
 
 VIDEO="$1"; shift
