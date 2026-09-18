@@ -8,6 +8,7 @@ Cada backend tenta 1x e levanta RuntimeError(motivo) se falhar — o
 orquestrador (transcribe.py) faz o fallback explícito. Sem retry aqui.
 """
 import json
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -126,9 +127,22 @@ def transcribe_openvino(video_path: str, model_size: str = "medium",
     return segments
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
 def _whisper_cpp_bin() -> str | None:
     import shutil
-    return shutil.which("whisper-cpp") or shutil.which("whisper-cli")
+    found = shutil.which("whisper-cpp") or shutil.which("whisper-cli")
+    if found:
+        return found
+    # Build local do projeto (thirdparty/whisper.cpp, GGML_VULKAN=1): funciona
+    # sem instalar nada no sistema. Ver README § Intel Arc.
+    for name in ("whisper-cli", "whisper-cpp"):
+        cand = _project_root() / "thirdparty" / "whisper.cpp" / "build" / "bin" / name
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    return None
 
 
 def transcribe_vulkan(video_path: str, model_size: str = "medium",
@@ -136,7 +150,8 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
     """Whisper via binário whisper.cpp (build Vulkan usa a B580). Levanta RuntimeError se falhar."""
     binary = _whisper_cpp_bin()
     if not binary:
-        raise RuntimeError("binário whisper-cpp/whisper-cli não está no PATH")
+        raise RuntimeError("binário whisper-cpp/whisper-cli não está no PATH "
+                           "nem em thirdparty/whisper.cpp/build/bin (ver README § Intel Arc)")
     # modelo ggml esperado em models/ggml-<size>.bin (convenção whisper.cpp)
     model = Path(f"models/ggml-{model_size}.bin")
     if not model.exists():
@@ -148,9 +163,12 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
     segments: list[Segment] = []
     try:
         for wav, offset in audio_chunks(video_path):
-            out_json = wav.with_suffix(".json")
-            cmd = [binary, "-m", str(model), "-f", str(wav), "-oj",
-                   "-l", language or "auto", "-nt", "-nc"]
+            # whisper.cpp atual: JSON sai em <input>.wav.json (ou <prefix>.json
+            # com -of); tokens reais só com -ojf; flag -nc não existe mais.
+            stem = wav.with_suffix("")
+            out_json = stem.with_suffix(".json")
+            cmd = [binary, "-m", str(model), "-f", str(wav), "-ojf",
+                   "-of", str(stem), "-l", language or "auto", "-nt"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0 or not out_json.exists():
                 raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")

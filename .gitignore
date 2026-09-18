@@ -7,3 +7,8 @@ metrics/*.json
 videos/
 *.mp4
 *.mkv
+# Artefatos locais pesados (não versionar; ver README § Intel Arc):
+# - thirdparty/: whisper.cpp (fonte+build, ~370 MB) e SPIRV-Headers/prefix
+# - models/: ggml-medium.bin (~1,5 GB, HuggingFace ggerganov/whisper.cpp)
+thirdparty/
+models/

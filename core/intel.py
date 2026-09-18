@@ -79,7 +79,15 @@ def has_openvino_gpu() -> bool:
 
 
 def has_whisper_cpp() -> bool:
-    return shutil.which("whisper-cpp") is not None or shutil.which("whisper-cli") is not None
+    if shutil.which("whisper-cpp") is not None or shutil.which("whisper-cli") is not None:
+        return True
+    # Build local do projeto (thirdparty/whisper.cpp, GGML_VULKAN=1).
+    root = Path(__file__).resolve().parent.parent
+    for name in ("whisper-cli", "whisper-cpp"):
+        cand = root / "thirdparty" / "whisper.cpp" / "build" / "bin" / name
+        if cand.is_file():
+            return True
+    return False
 
 
 @lru_cache(maxsize=1)
