@@ -153,6 +153,9 @@ transcrição (modelo, backend, tempo, RTF, segmentos), GPU/CPU/RAM
 (encoder, tempos, acertos/falhas) e API NVIDIA (requests, retries,
 latências, tokens somente se a API retornar, custo sempre `null`).
 
+Ctrl+C também gera relatório (`status: "interrupted"`, com a etapa
+interrompida) antes de encerrar.
+
 Monitoramento leve: 1 thread, 1 amostra a cada 2 s, só agregados em
 memória. O vídeo nunca é carregado nem copiado (só `stat` + `ffprobe`).
 Sem transcrição no JSON.
@@ -240,6 +243,15 @@ Também aceita lista direta `[{...}, {...}]`. Máximo 4 exemplos lidos.
 
 ## 6. Limitações conhecidas
 
+- **Modelo padrão pode expirar:** o `NIM_MODEL` padrão (`meta/llama-3.3-70b-instruct`)
+  saiu do ar em 2026-08-26 (API retorna 410). Se o scoring falhar com `Gone`,
+  passe `--model` com um slug vivo (liste em
+  `https://integrate.api.nvidia.com/v1/models`; ex. testado:
+  `nvidia/nemotron-3-super-120b-a12b`).
+- **Espaço em disco:** o preflight falha se houver < 1 GB livre na pasta de
+  saída e avisa se < 5 GB.
+- **Arquivo original:** nenhuma saída pode sobrescrever o vídeo de entrada
+  (o clipe é ignorado com erro se os caminhos coincidirem).
 - Scoring ainda é majoritariamente textual — energia de áudio ajuda a pegar grito/risada, mas jogada visual 100% silenciosa continua difícil sem visão computacional.
 - Detecção de rosto é Haar Cascade simples — funciona bem com webcam fixa, pode falhar se a câmera sai de cena (fallback: centro).
 - Rate limit do free tier da NVIDIA Build é por minuto — o script já usa lotes + retry com backoff, mas lives de 4h+ ainda levam alguns minutos no scoring.
