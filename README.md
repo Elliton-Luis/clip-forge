@@ -34,10 +34,11 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
    backoff 10/30/60 s; falha marca `failed` (nunca nota 0 silenciosa).
 5. **Seleção** — NMS com decaimento (`score * (1 - 0.8*overlap)`), filtro
    `--min-score`, diversidade `--max-per-10min`.
-6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate,
-   crop 9:16 centralizado no rosto (fallback: centro), legenda ASS queimada
-   (Liberation Sans Bold, base, área segura), encode `h264_qsv` (B580) com
-   fallback `libx264`.
+6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
+   composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
+   vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
+   palavras do título, pop de 280 ms); encode `h264_qsv` (B580) com fallback
+   `libx264`.
 7. **Relatório** — resumo no terminal + JSON próprio em `metrics/`, em
    sucesso, falha ou Ctrl+C (`interrupted`).
 
