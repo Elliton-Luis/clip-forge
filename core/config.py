@@ -7,7 +7,10 @@ import os
 from .system import safe_limits as _safe_limits
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_MODEL = os.environ.get("NIM_MODEL", "meta/llama-3.3-70b-instruct")
+# Default verificado vivo em 2026-09-18 via GET /v1/models (o anterior,
+# meta/llama-3.3-70b-instruct, entrou em EOL e retorna HTTP 410).
+# Slugs do catálogo expiram — confira antes de fixar outro valor.
+DEFAULT_MODEL = os.environ.get("NIM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
 WHISPER_LANGUAGE = os.environ.get("CLIPPER_LANGUAGE", None)  # None = auto
 
 # --- Limites seguros auto-detectados (sem mexer no sistema) ---
