@@ -129,6 +129,11 @@ def main() -> None:
             name = sanitize_filename(c.title, f"clipe_{i}")
             out = out_dir / f"{i:02d}_{name}.mp4"
             try:
+                # Auditoria (originais): ffmpeg usa -y; se a saída resolvesse
+                # para o próprio arquivo de entrada, o original de 17 GB seria
+                # destruído. Nunca escreva por cima da entrada.
+                if out.resolve() == Path(video).resolve():
+                    raise RuntimeError(f"saída coincide com a entrada ({out}) — clipe ignorado")
                 cut_clip(video, c, out, vertical=not args.no_vertical, captions=not args.no_captions)
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")
@@ -181,6 +186,21 @@ def main() -> None:
     except Exception as e:
         try:
             metrics.finish("failed", stage_failed=stage,
+                           error={"type": type(e).__name__, "message": str(e)[:500]})
+        except Exception:
+            pass
+        try:
+            metrics.print_summary()
+        except Exception:
+            pass
+        raise
+    except BaseException as e:
+        # Auditoria (Ctrl+C): KeyboardInterrupt/SystemExit não herdado acima
+        # (ex: Ctrl+C) ainda persiste o relatório como "interrupted" antes de
+        # propagar. Filhos ffmpeg recebem o mesmo SIGINT do terminal; a thread
+        # de métricas é daemon e morre com o processo.
+        try:
+            metrics.finish("interrupted", stage_failed=stage,
                            error={"type": type(e).__name__, "message": str(e)[:500]})
         except Exception:
             pass

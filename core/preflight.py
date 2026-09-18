@@ -58,6 +58,18 @@ def check(video_path: str, out_dir: Path, top_n: int,
     except Exception as e:
         errors.append(f"Pasta de saída não gravável ({out_dir}): {e}")
 
+    # Auditoria (disco): falhe ANTES da operação pesada se não houver espaço
+    # mínimo; avise se estiver baixo. Saídas são pequenas (clipes + manifest),
+    # mas nunca avance rumo a 0 bytes livres em silêncio.
+    try:
+        free_gb = shutil.disk_usage(out_dir).free / 1024**3
+        if free_gb < 1:
+            errors.append(f"Espaço insuficiente em {out_dir} ({free_gb:.1f} GB livres, mínimo 1 GB)")
+        elif free_gb < 5:
+            print(f"   ! Aviso: pouco espaço livre ({free_gb:.1f} GB em {out_dir})")
+    except Exception:
+        pass
+
     if top_n <= 0:
         errors.append(f"--top deve ser > 0 (recebido {top_n})")
 
