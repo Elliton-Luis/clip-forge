@@ -34,9 +34,10 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
    backoff 10/30/60 s; falha marca `failed` (nunca nota 0 silenciosa).
 5. **Seleção** — NMS com decaimento (`score * (1 - 0.8*overlap)`), filtro
    `--min-score`, diversidade `--max-per-10min`.
-6. **Corte** — `ffmpeg` com seek duplo (rápido + frame-accurate), crop 9:16
-   centralizado no rosto (fallback: centro), legenda queimada, encode
-   `h264_qsv` (B580) com fallback `libx264`.
+6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate,
+   crop 9:16 centralizado no rosto (fallback: centro), legenda ASS queimada
+   (Liberation Sans Bold, base, área segura), encode `h264_qsv` (B580) com
+   fallback `libx264`.
 7. **Relatório** — resumo no terminal + JSON próprio em `metrics/`, em
    sucesso, falha ou Ctrl+C (`interrupted`).
 
@@ -215,8 +216,8 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 - **IA errando "bom momento"**: ajuste `--context` primeiro; depois few-shot.
 - **Clipes do mesmo trecho**: `--max-per-10min 1` ou suba `--min-score`.
 - **Corte no meio da frase**: `--pad 1.2–1.5`.
-- **Legenda rápida/pequena**: `CAPTION_MIN_DURATION` / `FontSize` em
-  `core/config.py` (padrão 1.0 s / 16).
+- **Legenda rápida/pequena**: `CAPTION_MIN_DURATION` / `CAPTION_FONT_SIZE_*`
+  em `core/video.py` (padrão 1.0 s / 54 px vertical, 44 px widescreen).
 - `SEGMENTS_PER_SCORING_CALL` (em `core/config.py`): candidatos por chamada —
   suba p/ menos requests, desça se a IA "perde o fio".
 
@@ -230,6 +231,12 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
   cobre); `nvidia_api.failures` no JSON; lote falho = candidatos `failed`
   (excluídos da seleção, nunca nota 0).
 - **FFmpeg falhou?** `! QSV falhou` → fallback `libx264` automático;
+- **Legendas (sync/tokens/estilo)**: tempos absoluto→relativo com clamp em
+  `[0, duração]` (testes em `tests/`: `python -m unittest discover -s tests`);
+  corte usa `trim`+`setpts` (o `-ss` após `-i` deslocava legendas em `-fine`);
+  tokens `[eot]/[sot]/...` filtrados na origem; ASS com `PlayRes` = frame real,
+  Liberation Sans Bold 54 px na base. Timestamps do próprio Whisper têm jitter
+  natural (~0,5 s) — fora do escopo do programa corrigir.
   `! Falha clipe N` → pula o clipe, o job continua.
 - **Sem candidatos?** Vídeo sem fala (ou VAD removeu tudo) — `segments: 0`.
 - **Disco?** Preflight falha com < 1 GB livre, avisa com < 5 GB.
