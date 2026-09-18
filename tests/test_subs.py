@@ -10,7 +10,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core.models import Word
-from core.video import build_srt, build_ass, is_special_token, clean_caption_text
+from core.video import (build_srt, build_ass, is_special_token,
+                        clean_caption_text, highlight_words_from_title,
+                        CAPTION_POP_OPEN, CAPTION_HIGHLIGHT_OPEN,
+                        LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H, LAYOUT_BAND)
 
 
 def W(text, start, end):
@@ -156,8 +159,51 @@ class TestASS(unittest.TestCase):
 
     def test_style_present(self):
         ass = build_ass(self.words, 10.0, 20.0, 1080, 1920)
-        self.assertIn("Liberation Sans", ass)
+        self.assertIn("Montserrat", ass)
         self.assertIn("Alignment", ass)
+
+
+class TestHighlightAndAnimation(unittest.TestCase):
+    def test_title_words(self):
+        hl = highlight_words_from_title("AH DOIDO! PICA DE BICHO na live")
+        self.assertIn("doido", hl)
+        self.assertIn("bicho", hl)
+        self.assertNotIn("de", hl)    # curta
+        self.assertNotIn("na", hl)    # curta
+        self.assertNotIn("ah", hl)    # curta
+
+    def test_highlight_applied_deterministically(self):
+        words = [W("ah", 12.0, 12.3), W("doido", 12.4, 12.9)]
+        hl = highlight_words_from_title("AH DOIDO")
+        a1 = build_ass(words, 10.0, 20.0, 1080, 1920, highlight=hl)
+        a2 = build_ass(words, 10.0, 20.0, 1080, 1920, highlight=hl)
+        self.assertEqual(a1, a2)
+        self.assertIn(CAPTION_HIGHLIGHT_OPEN + "DOIDO", a1)
+        self.assertNotIn(CAPTION_HIGHLIGHT_OPEN + "AH", a1)
+
+    def test_no_highlight_without_title_words(self):
+        words = [W("olá", 12.0, 12.5)]
+        a = build_ass(words, 10.0, 20.0, 1080, 1920, highlight=set())
+        self.assertNotIn("\\1c", a)
+
+    def test_pop_animation_on_every_cue(self):
+        words = [W("a", 11.0, 11.4), W("b", 12.5, 13.0)]
+        a = build_ass(words, 10.0, 20.0, 1080, 1920)
+        dialogues = [l for l in a.splitlines() if l.startswith("Dialogue")]
+        self.assertTrue(dialogues)
+        for d in dialogues:
+            self.assertIn(CAPTION_POP_OPEN, d)
+
+    def test_animation_preserves_timing(self):
+        words = [W("olá", 12.5, 13.0), W("mundo", 13.2, 13.8)]
+        a = parse_ass(build_ass(words, 10.0, 20.0, 1080, 1920))
+        self.assertAlmostEqual(a[0][0], 2.5, places=2)
+        self.assertAlmostEqual(a[0][1], 3.8, places=2)
+
+    def test_layout_geometry(self):
+        self.assertEqual((LAYOUT_W, LAYOUT_H), (1080, 1920))
+        self.assertGreater(LAYOUT_MAIN_H, LAYOUT_H * 0.7)  # vídeo dominante
+        self.assertEqual(LAYOUT_BAND, (LAYOUT_H - LAYOUT_MAIN_H) // 2)
 
 
 if __name__ == "__main__":

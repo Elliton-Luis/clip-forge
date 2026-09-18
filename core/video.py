@@ -231,23 +231,62 @@ def build_srt(words: list, clip_start: float, clip_end: float | None = None) -> 
     return "\n".join(out)
 
 
-# Estilo Shorts/Reels/TikTok com fontes PRESENTES no sistema (Arial Black não
-# existe aqui — caía p/ Noto Regular fino). Liberation Sans Bold resolve via
-# fontconfig. Tamanhos em pixels do vídeo (PlayRes = dimensões de saída).
-CAPTION_FONT = "Liberation Sans"
+# Estilo Shorts/Reels/TikTok. Fonte: Montserrat ExtraBold (presente e
+# resolvida via fontconfig; Arial Black não existe aqui). Tamanhos em pixels
+# do vídeo (PlayRes = dimensões de saída).
+CAPTION_FONT = "Montserrat ExtraBold"
 CAPTION_FONT_SIZE_VERTICAL = 54
 CAPTION_FONT_SIZE_WIDE = 44
 CAPTION_MARGIN_V = 140
+# Amarelo TikTok (#FFE600) em BGR do ASS; volta ao branco após a palavra.
+CAPTION_HIGHLIGHT_OPEN = r"{\1c&H0000E6FF&}"
+CAPTION_HIGHLIGHT_CLOSE = r"{\1c&H00FFFFFF&}"
+# Pop discreto por bloco: 92% → 104% → 100% em 280 ms (cues têm ≥1 s).
+CAPTION_POP_OPEN = r"{\fscx92\fscy92\t(0,120,\fscx104\fscy104)\t(120,280,\fscx100\fscy100)}"
+# Composição vertical: canvas 1080x1920, vídeo principal 1080x1400 (73%),
+# faixas de 260 px em cima/embaixo com blur do próprio vídeo.
+LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H = 1080, 1920, 1400
+LAYOUT_BAND = (LAYOUT_H - LAYOUT_MAIN_H) // 2  # 260
+
+
+def highlight_words_from_title(title: str) -> set:
+    """Palavras do título (minúsculas, alfanuméricas, len>=5) para destaque.
+
+    Determinístico e orientado a dados: o título é o gancho viral escolhido
+    pelo scoring — palavras dele que reaparecem na legenda ganham amarelo.
+    Sem LLM, sem aleatoriedade. len>=5 evita stopwords (para/como/isso).
+    """
+    words = set()
+    for tok in re.findall(r"\w+", (title or "").lower()):
+        if len(tok) >= 5:
+            words.add(tok)
+    return words
+
+
+def _apply_highlight(line: str, highlight: set | None) -> str:
+    if not highlight:
+        return line
+    out = []
+    for tok in line.split(" "):
+        key = re.sub(r"\W+", "", tok.lower())
+        if key in highlight:
+            out.append(f"{CAPTION_HIGHLIGHT_OPEN}{tok}{CAPTION_HIGHLIGHT_CLOSE}")
+        else:
+            out.append(tok)
+    return " ".join(out)
 
 
 def build_ass(words: list, clip_start: float, clip_end: float,
-              width: int, height: int, font_size: int = CAPTION_FONT_SIZE_VERTICAL) -> str:
+              width: int, height: int, font_size: int = CAPTION_FONT_SIZE_VERTICAL,
+              highlight: set | None = None, animate: bool = True) -> str:
     """Gera ASS com PlayRes = dimensões REAIS de saída.
 
     Motivo: sem PlayRes explícito o libass assume 384x288 e escala o estilo
     de forma anamórfica (fonte gigante/esticada, MarginV fora da base). Com
     PlayRes == frame, FontSize/MarginV valem pixels do vídeo, determinístico.
     Mesmas garantias de tempo/texto do build_srt (mesmo núcleo).
+    highlight: set de palavras (lower) pintadas de amarelo — ver
+    highlight_words_from_title. animate: pop discreto por bloco (280 ms).
     """
     duration = max(0.0, clip_end - clip_start)
     cues = _split_lines(_group_cues(words, clip_start, clip_end), clip_start, duration) \
@@ -273,7 +312,12 @@ def build_ass(words: list, clip_start: float, clip_end: float,
          "Effect, Text"),
     ]
     for cs, ce, text in cues:
-        text = text.replace("\n", "\\N")
+        parts = []
+        for line in text.split("\n"):
+            parts.append(_apply_highlight(line, highlight))
+        text = r"\N".join(parts)
+        if animate:
+            text = CAPTION_POP_OPEN + text
         lines.append(f"Dialogue: 0,{_ass_time(cs)},{_ass_time(ce)},Clip,,0,0,0,,{text}")
     return "\n".join(lines) + "\n"
 
@@ -294,17 +338,41 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
     duration = c.duration
     filters: list[str] = []
 
+    # Corte via trim/atrim (NÃO via -ss após -i): medição ponta a ponta
+    # provou que -ss de saída desloca a linha do tempo das legendas em
+    # exatamente -fine (o filtro subtitles avalia na timeline do demux,
+    # que o -ss de saída não desloca), enquanto trim+setpts/asetpts deixa
+    # vídeo, áudio e legendas todos 0-based e alinhados. Sem offset mágico.
+    coarse = max(0, c.start - 2)
+    fine = c.start - coarse
+    end = fine + duration
+    af = f"atrim=start={fine}:end={end},asetpts=PTS-STARTPTS"
+
     if vertical:
+        # Composição Shorts: canvas 1080x1920, vídeo principal 1080x1400 (73%)
+        # centralizado, faixas de 260 px com blur do próprio vídeo (cores
+        # derivadas do conteúdo, sem cor fixa). Blur em resolução baixa
+        # (270x480) = barato; sem arquivos intermediários.
         fx = face_center_x(video_path, c.start, c.end)
         w, h = _probe_dimensions(video_path)
-        crop_fail = bool(w and h and (w * 1920 / h) < 1080)
+        crop_fail = bool(w and h and (w * LAYOUT_MAIN_H / h) < LAYOUT_W)
         if crop_fail:
-            filters.append("scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(1080-iw)/2:(1920-ih)/2:color=black")
+            fg = (f"scale={LAYOUT_W}:{LAYOUT_MAIN_H}:force_original_aspect_ratio=increase,"
+                  f"crop={LAYOUT_W}:{LAYOUT_MAIN_H}")
         else:
-            filters.append(f"scale=-2:1920,crop=1080:1920:x=min(max(iw*{fx:.3f}-540\\,0)\\,iw-1080):y=0")
-        out_w, out_h, font_size = 1080, 1920, CAPTION_FONT_SIZE_VERTICAL
+            fg = (f"scale=-2:{LAYOUT_MAIN_H},crop={LAYOUT_W}:{LAYOUT_MAIN_H}:"
+                  f"x=min(max(iw*{fx:.3f}-{LAYOUT_W // 2}\\,0)\\,iw-{LAYOUT_W}):y=0")
+        filters.append(
+            f"trim=start={fine}:end={end},setpts=PTS-STARTPTS,split=2[base][fgs];"
+            f"[base]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
+            f"gblur=sigma=25,scale={LAYOUT_W}:{LAYOUT_H},"
+            f"eq=brightness=-0.12:saturation=0.85[bg];"
+            f"[fgs]{fg}[fg];"
+            f"[bg][fg]overlay=(W-w)/2:{LAYOUT_BAND}")
+        out_w, out_h, font_size = LAYOUT_W, LAYOUT_H, CAPTION_FONT_SIZE_VERTICAL
     else:
         filters.append("scale=1280:-2")
+        filters.append(f"trim=start={fine}:end={end},setpts=PTS-STARTPTS")
         out_w, out_h, font_size = None, None, CAPTION_FONT_SIZE_WIDE
         w, h = _probe_dimensions(video_path)
         if w and h:
@@ -313,22 +381,14 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
 
     srt_file: str | None = None
     try:
-        # Corte via trim/atrim (NÃO via -ss após -i): medição ponta a ponta
-        # provou que -ss de saída desloca a linha do tempo das legendas em
-        # exatamente -fine (o filtro subtitles avalia na timeline do demux,
-        # que o -ss de saída não desloca), enquanto trim+setpts/asetpts deixa
-        # vídeo, áudio e legendas todos 0-based e alinhados. Sem offset mágico.
-        # Ordem no grafo: escala/crop → trim+setpts → subtitles (por último).
-        coarse = max(0, c.start - 2)
-        fine = c.start - coarse
-        end = fine + duration
-        filters.append(f"trim=start={fine}:end={end},setpts=PTS-STARTPTS")
-        af = f"atrim=start={fine}:end={end},asetpts=PTS-STARTPTS"
         if captions and c.words:
             # ASS com PlayRes = frame real → layout determinístico em pixels.
             # Sem dimensões conhecidas, cai no SRT legado (comportamento anterior).
+            # Destaque: palavras do título (determinístico, sem LLM).
+            hl = highlight_words_from_title(c.title)
             if out_w and out_h:
-                subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size)
+                subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size,
+                                 highlight=hl)
                 suffix = ".ass"
             else:
                 subs = build_srt(c.words, c.start, c.end)
@@ -343,7 +403,7 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                     filters.append(f"subtitles='{esc}'")
                 else:
                     filters.append(
-                        f"subtitles='{esc}':force_style='FontName=Liberation Sans,Bold=1,FontSize=22,"
+                        f"subtitles='{esc}':force_style='FontName=Montserrat ExtraBold,FontSize=22,"
                         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=120'"
                     )
         vf = ",".join(filters)
