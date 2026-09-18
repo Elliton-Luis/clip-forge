@@ -22,8 +22,11 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 
 ## Como funciona
 
-1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão);
+1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão),
+   com VAD Silero (`models/ggml-silero-v5.1.2.bin`, preserva pausas);
    fallback `faster-whisper` CPU int8, sempre com motivo explícito.
+   Opcional: `CLIPPER_TRANSCRIBE_AUDIO_FILTER` (ex. loudnorm) aplicado só ao
+   áudio da transcrição — off por padrão (sem ganho medido em áudio estourado).
 2. **Janelas candidatas** — janela deslizante 20–90 s, passo 20 s, sobre a
    transcrição; `start/end` ajustados à palavra mais próxima (±1,5 s) + respiro
    `--pad`.
@@ -37,8 +40,11 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
    composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
    vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
-   palavras do título, pop de 280 ms); encode `h264_qsv` (B580) com fallback
+   palavras do título, pop de 280 ms) + **hook** (título do scoring nos
+   primeiros 2,8 s, some depois); encode `h264_qsv` (B580) com fallback
    `libx264`.
+   Texto das cues remontado por `smart_join` (respeita fronteiras de token:
+   "direita", não "dire ita"); tokens `[eot]/[sot]` filtrados na origem.
 7. **Relatório** — resumo no terminal + JSON próprio em `metrics/`, em
    sucesso, falha ou Ctrl+C (`interrupted`).
 
@@ -72,6 +78,29 @@ cortes/
 > Vídeo grande? Use **sempre** `--cache-dir` (o `run.sh` já faz isso): se algo
 > cair no meio, re-rodar reusa transcrição + scores em vez de recomeçar do zero.
 
+## Interface interativa (TUI)
+
+```bash
+python clipper.py        # sem argumentos abre a TUI
+```
+
+Menu: **Processar vídeo** · **Ver último relatório** · **Última transcrição** · **Sair**.
+Navegação: setas movem, `←→`/Espaço altera opções e checkboxes, Enter edita
+campos de texto ou confirma, Esc cancela. Só usa `curses` (stdlib, sem
+dependência nova); sem terminal compatível, a CLI continua funcionando.
+
+A TUI monta a **mesma configuração** da CLI (nada é reimplementado):
+lista `videos/` para escolher a entrada (ou caminho manual), 9 modelos de
+scoring (`config/models.json`, só LLMs de texto verificados), backend,
+números (validados: `--top` > 0, `--pad` 0–5 etc.), checkboxes
+(`[x] Vídeo vertical` = sem `--no-vertical`), contexto/examples e cache.
+Antes de executar há uma tela de confirmação com o resumo **e o comando CLI
+equivalente** (ex.: `python clipper.py video.mp4 --top 5 --model ...`),
+para aprender a CLI junto. `Ctrl+C` e falhas geram relatório normalmente.
+
+Opções avançadas (contexto, examples, forçar reprocessamento, debug de
+legendas) ficam no final do formulário, sem esconder nada.
+
 ## Instalação
 
 ```bash
@@ -84,7 +113,7 @@ pip install -r requirements.txt
 
 # 3. chave grátis do scoring (https://build.nvidia.com)
 export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
-export NIM_MODEL="z-ai/glm-5.3"   # default atual; ajuste conforme o catálogo
+export NIM_MODEL="nvidia/nemotron-3-super-120b-a12b"   # default atual; ajuste conforme o catálogo
 
 # 4. backend Vulkan da transcrição (uma vez; detalhe na seção GPU)
 #    git clone whisper.cpp + SPIRV-Headers, cmake -DGGML_VULKAN=1,
@@ -151,7 +180,8 @@ chars + tempos/energia/speech_rate). **Vídeo e áudio nunca saem da máquina.**
 
 | Modelo | Quando usar |
 |---|---|
-| `z-ai/glm-5.3` (padrão, vivo em 2026-09-18) | Decisão original — reasoning nativo, melhor p/ hype/humor |
+| `nvidia/nemotron-3-super-120b-a12b` (padrão, vivo em 2026-09-18) | Padrão atual — mesmo momento que o GLM em teste A/B, bem mais rápido |
+| `z-ai/glm-5.3` | Decisão original — reasoning nativo, melhor p/ hype/humor, scoring mais lento |
 | `z-ai/glm-5.3-flash` | Variante mais rápida do mesmo modelo |
 | `nvidia/nemotron-3-super-120b-a12b` | Alternativa testada |
 | `mistralai/mistral-nemotron` | Mais leve, se os de cima instabilizarem |
@@ -162,9 +192,10 @@ HTTP 410). Se o scoring falhar com `Gone`, liste os vivos
 `NIM_MODEL`/`--model`. O código remove blocos de reasoning (`<think>`) antes
 de ler o JSON.
 
-> Atenção ao custo real: o GLM raciocina antes de responder — cada lote leva
-> ~1 min ou mais. Num vídeo de 7 min o scoring levou 17 min (85% do run).
-> É o gargalo atual, não a máquina. A variante `flash` existe para isso.
+> Atenção ao custo real: modelos de reasoning (ex.: GLM) raciocinam antes de
+> responder — cada lote leva ~1 min ou mais. Num teste, o scoring GLM levou
+> 17 min num vídeo de 7 min (85% do run). O default Nemotron é bem mais rápido
+> com o mesmo momento selecionado.
 
 ## Métricas e cache
 
@@ -188,6 +219,7 @@ fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
 | `--top N` | Quantos clipes gerar | 8 |
 | `--model NOME` | Modelo de scoring | env `NIM_MODEL` |
 | `--transcribe-backend B` | `auto`, `gpu`, `vulkan`, `openvino`, `cpu` | env ou `auto` |
+| `--debug-captions` | Preserva ASS/SRT/transcript/diagnóstico em `debug/` | off |
 | `--cache-dir DIR` | Ativa cache | desligado |
 | `--force-retranscribe` | Ignora cache de transcrição | off |
 | `--force-rescore` | Ignora cache de scores | off |
@@ -232,13 +264,19 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
   cobre); `nvidia_api.failures` no JSON; lote falho = candidatos `failed`
   (excluídos da seleção, nunca nota 0).
 - **FFmpeg falhou?** `! QSV falhou` → fallback `libx264` automático;
-- **Legendas (sync/tokens/estilo)**: tempos absoluto→relativo com clamp em
-  `[0, duração]` (testes em `tests/`: `python -m unittest discover -s tests`);
-  corte usa `trim`+`setpts` (o `-ss` após `-i` deslocava legendas em `-fine`);
-  tokens `[eot]/[sot]/...` filtrados na origem; ASS com `PlayRes` = frame real,
-  Liberation Sans Bold 54 px na base. Timestamps do próprio Whisper têm jitter
-  natural (~0,5 s) — fora do escopo do programa corrigir.
   `! Falha clipe N` → pula o clipe, o job continua.
+- **Legendas (sync/tokens/estilo)**: tempos absoluto→relativo com clamp em
+  `[0, duração]` + validação matemática (avisos no log); corte usa
+  `trim`+`setpts` (o `-ss` após `-i` deslocava legendas em `-fine`);
+  tokens `[eot]/[sot]/...` filtrados na origem; ASS com `PlayRes` = frame real,
+  Montserrat ExtraBold 54 px na base. Timestamps do próprio Whisper têm jitter
+  natural (~0,5 s, pior em áudio estourado) — medição de viés por energia é
+  inviável nesse áudio; sem offset.
+- **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
+  na TUI) preserva por clipe `captions.ass`, `captions.srt`,
+  `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem) em
+  `debug/`, mais `transcript.txt` legível do vídeo. Testes:
+  `python -m unittest discover -s tests`.
 - **Sem candidatos?** Vídeo sem fala (ou VAD removeu tudo) — `segments: 0`.
 - **Disco?** Preflight falha com < 1 GB livre, avisa com < 5 GB.
 - **Interrompeu (Ctrl+C)?** Relatório `interrupted` em `metrics/` com a etapa;
