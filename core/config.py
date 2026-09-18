@@ -7,10 +7,11 @@ import os
 from .system import safe_limits as _safe_limits
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-# Default verificado vivo em 2026-09-18 via GET /v1/models (o anterior,
-# meta/llama-3.3-70b-instruct, entrou em EOL e retorna HTTP 410).
-# Slugs do catálogo expiram — confira antes de fixar outro valor.
-DEFAULT_MODEL = os.environ.get("NIM_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+# Decisão original do projeto: GLM (README: "Melhor opção", reasoning nativo).
+# Slug verificado vivo em 2026-09-18 via GET /v1/models + chamada real de
+# scoring (atenção: o catálogo usa "z-ai/glm-5.3", não "zai/glm-5-3").
+# Slugs expiram — confira antes de fixar outro valor.
+DEFAULT_MODEL = os.environ.get("NIM_MODEL", "z-ai/glm-5.3")
 WHISPER_LANGUAGE = os.environ.get("CLIPPER_LANGUAGE", None)  # None = auto
 
 # --- Limites seguros auto-detectados (sem mexer no sistema) ---

@@ -107,13 +107,13 @@ de utilização/VRAM — `null` honesto em vez de número inventado.
 ## 2. Pegar uma chave grátis da NVIDIA Build
 
 1. Crie uma conta em https://build.nvidia.com
-2. Escolha um modelo de texto (ex: Llama 3.3 70B Instruct, Nemotron, etc.)
+2. Escolha um modelo de texto (ex: GLM 5.3, Nemotron, etc.)
 3. Copie sua API key e o **nome exato do modelo** mostrado no code snippet
    da página do modelo (o nome muda com frequência, então confira lá)
 
 ```bash
 export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
-export NIM_MODEL="nvidia/nemotron-3-super-120b-a12b"   # default atual; ajuste conforme o catálogo
+export NIM_MODEL="z-ai/glm-5.3"   # default atual; ajuste conforme o catálogo
 ```
 
 ### Qual modelo escolher
@@ -124,14 +124,16 @@ qualidade de raciocínio/instrução, não tamanho bruto:
 
 | Modelo | Quando usar |
 |---|---|
-| `nvidia/nemotron-3-super-120b-a12b` (padrão atual, verificado vivo em 2026-09-18) | Padrão testado, bom equilíbrio |
-| `zai/glm-5-3` (confirme o slug no site) | Melhor opção — tem reasoning nativo, ajuda bastante a "sentir" o que é engraçado/hype |
+| `z-ai/glm-5.3` (padrão atual, verificado vivo em 2026-09-18) | Decisão original do projeto — reasoning nativo, melhor para "sentir" hype/humor |
+| `z-ai/glm-5.3-flash` | Variante mais rápida do mesmo modelo |
+| `nvidia/nemotron-3-super-120b-a12b` | Alternativa testada, bom equilíbrio |
 | `mistralai/mistral-nemotron` | Mais leve, use se os de cima estiverem instáveis no free tier |
 
-> O modelo padrão anterior (`meta/llama-3.3-70b-instruct`) entrou em EOL em
-> 2026-08-26 (HTTP 410). Slugs do catálogo expiram — se o scoring falhar com
-> `Gone`, liste os modelos vivos (`GET https://integrate.api.nvidia.com/v1/models`)
-> e ajuste `NIM_MODEL`/`--model`.
+> O modelo padrão anterior (`meta/llama-3.3-70b-instruct`, que nunca foi a
+> escolha do projeto) entrou em EOL em 2026-08-26 (HTTP 410) e foi removido.
+> Slugs do catálogo expiram — se o scoring falhar com `Gone`, liste os modelos
+> vivos (`GET https://integrate.api.nvidia.com/v1/models`) e ajuste
+> `NIM_MODEL`/`--model`.
 
 > O nome exato do modelo no catálogo muda com frequência — sempre confira
 > o slug certo no code snippet da página do modelo em build.nvidia.com
@@ -274,10 +276,11 @@ Também aceita lista direta `[{...}, {...}]`. Máximo 4 exemplos lidos.
 
 ## 6. Limitações conhecidas
 
-- **Modelo padrão pode expirar:** slugs do catálogo NVIDIA expiram (o anterior,
-  `meta/llama-3.3-70b-instruct`, morreu em 2026-08-26 com HTTP 410). O default
-  atual (`nvidia/nemotron-3-super-120b-a12b`) foi verificado vivo em 2026-09-18;
-  se o scoring falhar com `Gone`, liste os modelos vivos e ajuste `NIM_MODEL`/`--model`.
+- **Modelo padrão pode expirar:** slugs do catálogo NVIDIA expiram (ex.:
+  `meta/llama-3.3-70b-instruct`, morto em 2026-08-26 com HTTP 410 — nunca foi a
+  escolha do projeto). O default atual (`z-ai/glm-5.3`) foi verificado vivo em
+  2026-09-18 com chamada real de scoring; se falhar com `Gone`, liste os modelos
+  vivos e ajuste `NIM_MODEL`/`--model`.
 - **Espaço em disco:** o preflight falha se houver < 1 GB livre na pasta de
   saída e avisa se < 5 GB.
 - **Arquivo original:** nenhuma saída pode sobrescrever o vídeo de entrada
