@@ -186,7 +186,12 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
     if not api_key:
         sys.exit("Erro: defina NVIDIA_API_KEY (https://build.nvidia.com).")
 
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key)
+    # Auditoria (API): timeout explícito + max_retries=0 no client. Sem isso,
+    # cada chamada poderia travar até 600s (default) e ainda sofrer retries
+    # internos do SDK além dos nossos 3× com backoff 10/30/60 — paralisando um
+    # job de 1h40. A única política de retry é _call_with_retry (limitada).
+    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key,
+                    timeout=180, max_retries=0)
     examples = _load_examples(examples_path)
     prompt = _build_prompt(SYSTEM_PROMPT, context, examples)
 
