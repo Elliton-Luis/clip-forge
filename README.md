@@ -192,6 +192,7 @@ o tamanho/mtime muda e o cache é invalidado automaticamente.
 | `--max-per-10min N` | Máximo de clipes por janela de 10 min (diversidade) | 2 |
 | `--context TEXTO` | Contexto injetado no prompt (ex: "ranked Valorant duo com X") | — |
 | `--examples JSON` | Arquivo few-shot com 2–4 exemplos (ver `examples.json`) | — |
+| `--transcribe-backend B` | `auto` (Vulkan→OpenVINO→CPU), `vulkan`, `openvino` ou `cpu` | env ou `auto` |
 
 Exemplos:
 
