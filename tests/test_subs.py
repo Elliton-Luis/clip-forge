@@ -526,6 +526,39 @@ class TestWordBoundaryGrouping(unittest.TestCase):
         self.assertNotIn(" ITA", srt.replace("DIREITA", ""))
 
 
+class TestIntervalMode(unittest.TestCase):
+    """Modo experimental intervals: rajadas, não blocos de leitura."""
+
+    def test_short_pause_does_not_split(self):
+        words = [W(" melhor", 17.17, 17.56), W(" cen", 17.67, 17.78),
+                 W("ário", 18.24, 18.31), W(" possível", 18.31, 19.0)]
+        cues = _group_cues(words, 0.0, 30.0, mode="intervals")
+        self.assertEqual(len(cues), 1)
+        self.assertIn("CENÁRIO", cues[0][2])
+
+    def test_long_silence_splits(self):
+        words = [W(" foi", 10.0, 10.4), W(" embora", 12.0, 12.4)]
+        cues = _group_cues(words, 0.0, 30.0, mode="intervals")
+        self.assertEqual(len(cues), 2)
+
+    def test_long_burst_splits_at_word_boundary(self):
+        words = [W(f" w{i}", float(i), float(i) + 0.5) for i in range(30)]
+        cues = _group_cues(words, 0.0, 60.0, mode="intervals")
+        self.assertGreater(len(cues), 1)
+        for _, _, text in cues:
+            self.assertTrue(text[0].isalpha())
+
+    def test_invalid_mode(self):
+        with self.assertRaises(ValueError):
+            _group_cues([W(" a", 1.0, 1.5)], 0.0, 30.0, mode="x")
+
+    def test_words_default_unchanged(self):
+        words = [W(" foi", 10.0, 10.4), W(" embora", 12.0, 12.4)]
+        a = _group_cues(words, 0.0, 30.0)
+        b = _group_cues(words, 0.0, 30.0, mode="words")
+        self.assertEqual(a, b)
+
+
 class TestSimultaneousSpeech(unittest.TestCase):
     """Falas sobrepostas viram cues coexistentes, nunca sequência."""
 

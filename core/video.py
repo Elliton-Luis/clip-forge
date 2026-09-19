@@ -178,7 +178,62 @@ def valid_caption_words(words: list) -> list:
     return [w for w in (words or []) if not is_degenerate_word(w)]
 
 
-# Piso de ruído para simultaneidade: overlaps <= 0.1s são jitter de medição
+# Modo experimental "intervals" (comparação A/B atrás de --caption-mode):
+# cues por rajada de fala em vez de contagem de palavras. Pausas curtas
+# (< GAP) não quebram (inclui gaps de medição no meio da palavra); rajadas
+# longas partem em > MAX_DUR, sempre em fronteira de palavra. Ponto de
+# partida para comparação — não default até evidência.
+INTERVAL_GAP_SEC = 0.8
+INTERVAL_MAX_DUR = 10.0
+
+
+def group_interval_words(words: list, clip_start: float, clip_end: float) -> list[list]:
+    """Agrupa por intervalos de fala (experimental). Puro e testável.
+
+    Mesmas invariantes do modo words: só words válidas no clip, quebra só
+    em fronteira de palavra (continuações fecham o grupo), vozes concorrentes
+    separadas. Diferença: sem teto de 8 words/48 chars e sem quebra em pausa
+    curta — a unidade é a rajada de fala, não o bloco de leitura.
+    """
+    words = sorted(valid_caption_words(words), key=lambda w: w.start)
+    words = [w for w in words if w.end > clip_start and w.start < clip_end]
+    has_boundaries = any(w.text[:1].isspace() for w in words if w.text)
+
+    def is_continuation(w) -> bool:
+        return has_boundaries and not (w.text[:1].isspace() if w.text else True)
+
+    def ends_sentence(w) -> bool:
+        return bool(w.text.strip()) and w.text.strip()[-1] in ".!?"
+
+    cues: list[list] = []
+    for voice in _split_voices(words):
+        cur: list = []
+        for w in voice:
+            if cur:
+                prev = cur[-1]
+                gap = w.start - prev.end
+                too_long = w.end - cur[0].start > INTERVAL_MAX_DUR
+                if gap > INTERVAL_GAP_SEC or (too_long and not is_continuation(w)):
+                    if too_long and gap <= INTERVAL_GAP_SEC:
+                        # Rajada longa sem pausa: prefere fechar na última
+                        # frase completa (pontuação não seguida de continuação).
+                        cut_at = None
+                        for k in range(len(cur) - 1, -1, -1):
+                            nxt = cur[k + 1] if k + 1 < len(cur) else None
+                            if ends_sentence(cur[k]) and (
+                                    nxt is None or not is_continuation(nxt)):
+                                cut_at = k
+                                break
+                        if cut_at is not None:
+                            cues.append(cur[:cut_at + 1])
+                            cur = cur[cut_at + 1:]
+                    cues.append(list(cur))
+                    cur = []
+            cur.append(w)
+        if cur:
+            cues.append(list(cur))
+    cues.sort(key=lambda g: (g[0].start, g[-1].end))
+    return cues
 # (quantização do Whisper ~10ms; medido 0 overlaps incidentais nos transcripts
 # reais) e seguem sequenciais; acima disso, vozes concorrentes. Calibrado,
 # documentado, testado — não é palpite.
@@ -208,7 +263,8 @@ def _split_voices(words: list) -> list[list]:
     return voices
 
 
-def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[list]:
+def _group_cue_words(words: list, clip_start: float, clip_end: float,
+                     mode: str = "words") -> list[list]:
     """Núcleo compartilhado: agrupa objetos Word em cues (listas de Word).
 
     Usado por _group_cues() e pela auditoria WORD→CUE do debug. A regra de
@@ -220,7 +276,13 @@ def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[li
        (> VOICE_OVERLAP_MIN) formam vozes concorrentes, cada uma agrupada
        separadamente. Sem diarização não há nomes de pessoas — só cues
        coexistentes com timestamps preservados (lanes resolvem a exibição).
+    mode="intervals" (experimental, --caption-mode): agrupa por rajada de
+    fala via group_interval_words; "words" é o default medido.
     """
+    if mode == "intervals":
+        return group_interval_words(words, clip_start, clip_end)
+    if mode != "words":
+        raise ValueError(f"caption_mode inválido: {mode!r} (words|intervals)")
     words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
     has_boundaries = any(w.text[:1].isspace() for w in words if w.text)
@@ -271,7 +333,8 @@ def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[li
     return cues
 
 
-def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
+def _group_cues(words: list, clip_start: float, clip_end: float,
+                mode: str = "words") -> list[tuple]:
     """Agrupa palavras em cues (s_abs, e_abs, texto_limpo). Puro e testável.
 
     Mesmas garantias do build_srt: só palavras dentro do corte, texto limpo,
@@ -287,7 +350,7 @@ def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
     resolvem a exibição).
     """
     out: list[list] = []
-    for chunk_words in _group_cue_words(words, clip_start, clip_end):
+    for chunk_words in _group_cue_words(words, clip_start, clip_end, mode=mode):
         if not chunk_words:
             continue
         s = chunk_words[0].start
@@ -371,7 +434,8 @@ def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[
 
 
 def build_srt(words: list, clip_start: float, clip_end: float | None = None,
-              event_cues: list[tuple] | None = None) -> str:
+              event_cues: list[tuple] | None = None,
+              caption_mode: str = "words") -> str:
     """Gera SRT com tempos RELATIVOS ao corte (clip_start → 0).
 
     Garantias determinísticas:
@@ -390,7 +454,8 @@ def build_srt(words: list, clip_start: float, clip_end: float | None = None,
     duration = max(0.0, clip_end - clip_start)
     if duration <= 0:
         return ""
-    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end),
+    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end,
+                                                     mode=caption_mode),
                                          event_cues or []),
                         clip_start, duration)
     out = [f"{i}\n{_srt_time(cs)} --> {_srt_time(ce)}\n{text}\n"
@@ -560,7 +625,8 @@ def build_ass(words: list, clip_start: float, clip_end: float,
               width: int, height: int, font_size: int = CAPTION_FONT_SIZE_VERTICAL,
               highlight: set | None = None, animate: bool = True,
               hook_title: str | None = None,
-              event_cues: list[tuple] | None = None) -> str:
+              event_cues: list[tuple] | None = None,
+              caption_mode: str = "words") -> str:
     """Gera ASS com PlayRes = dimensões REAIS de saída.
 
     Motivo: sem PlayRes explícito o libass assume 384x288 e escala o estilo
@@ -573,7 +639,8 @@ def build_ass(words: list, clip_start: float, clip_end: float,
     superior (fora da área principal); vazio = sem hook (nunca usa filename fallback).
     """
     duration = max(0.0, clip_end - clip_start)
-    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end),
+    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end,
+                                                     mode=caption_mode),
                                          event_cues or []),
                         clip_start, duration) if duration > 0 else []
     lines = [
@@ -847,7 +914,8 @@ def write_human_transcript(segments: list, path) -> None:
 def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
                       event_cues: list[tuple] | None = None,
                       acoustic_events: list | None = None,
-                      video_path: str | None = None) -> None:
+                      video_path: str | None = None,
+                      caption_mode: str = "words") -> None:
     """Artefatos de --debug-captions em debug/<clip>/ (só nesse modo)."""
     d = Path(debug_dir) / Path(out_path).stem
     d.mkdir(parents=True, exist_ok=True)
@@ -855,7 +923,8 @@ def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
     (d / f"captions{ext}").write_text(subs, encoding="utf-8")
     if suffix == ".ass":
         (d / "captions.srt").write_text(
-            build_srt(c.words, c.start, c.end, event_cues=event_cues), encoding="utf-8")
+            build_srt(c.words, c.start, c.end, event_cues=event_cues,
+                      caption_mode=caption_mode), encoding="utf-8")
     words = sorted(c.words, key=lambda w: w.start)
     (d / "transcript-words.json").write_text(
         json.dumps(
@@ -867,7 +936,8 @@ def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
                          "confidence": e.confidence} for e in acoustic_events],
                        ensure_ascii=False, indent=2), encoding="utf-8")
     duration = max(0.0, c.end - c.start)
-    cues = _split_lines(merge_event_cues(_group_cues(c.words, c.start, c.end),
+    cues = _split_lines(merge_event_cues(_group_cues(c.words, c.start, c.end,
+                                                     mode=caption_mode),
                                          event_cues or []),
                         c.start, duration) if duration > 0 else []
     warns = validate_cues(c.words, c.start, c.end, cues)
@@ -889,7 +959,8 @@ def _video_encoder() -> tuple[str, list[str]]:
 
 def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions: bool,
         debug_dir: Path | str | None = None,
-        acoustic_events: list | None = None) -> None:
+        acoustic_events: list | None = None,
+        caption_mode: str = "words") -> None:
     duration = c.duration
     filters: list[str] = []
 
@@ -948,10 +1019,12 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                 # Hook = título do scoring (sem LLM extra); vazio = sem hook.
                 subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size,
                                  highlight=hl, hook_title=c.title or None,
-                                 event_cues=ev_cues or None)
+                                 event_cues=ev_cues or None,
+                                 caption_mode=caption_mode)
                 suffix = ".ass"
             else:
-                subs = build_srt(c.words, c.start, c.end, event_cues=ev_cues or None)
+                subs = build_srt(c.words, c.start, c.end, event_cues=ev_cues or None,
+                                 caption_mode=caption_mode)
                 suffix = ".srt"
             if subs:
                 f = tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8")
@@ -970,7 +1043,8 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                     _write_clip_debug(debug_dir, out_path, c, subs, suffix,
                                       event_cues=ev_cues or None,
                                       acoustic_events=acoustic_events or None,
-                                      video_path=video_path)
+                                      video_path=video_path,
+                                      caption_mode=caption_mode)
         vf = ",".join(filters)
         vcodec, vextra = _video_encoder()
         # QSV sem flag -hwaccel (sonda mostrou que -hwaccel qsv quebra o init

@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=DEFAULT_MODEL, help=f"Modelo NIM (padrão: {DEFAULT_MODEL})")
     p.add_argument("--no-vertical", action="store_true", help="Não recortar para 9:16")
     p.add_argument("--no-captions", action="store_true", help="Não queimar legendas")
+    p.add_argument("--caption-mode", default="words", choices=["words", "intervals"],
+                   help="Agrupamento das legendas: words (blocos de leitura, padrão medido) ou intervals (rajadas de fala, experimental)")
     p.add_argument("--acoustic-captions", action="store_true",
                    help="Queima *ÁUDIO ESTOURADO* nos trechos com clipping (experimental, off)")
     p.add_argument("--laughs", default=None,
@@ -104,7 +106,7 @@ def parse_cli(argv=None):
 
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
-    "acoustic_captions", "whisper_model", "laughs",
+    "acoustic_captions", "whisper_model", "laughs", "caption_mode",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
@@ -131,6 +133,7 @@ def config_from_args(args) -> dict:
         "no_vertical": bool(args.no_vertical),
         "no_captions": bool(args.no_captions),
         "acoustic_captions": bool(args.acoustic_captions),
+        "caption_mode": args.caption_mode,
         "laughs": args.laughs,
         "whisper_model": args.whisper_model,
         "cache_dir": args.cache_dir,
@@ -188,6 +191,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-captions")
     if cfg.get("acoustic_captions"):
         parts.append("--acoustic-captions")
+    if cfg.get("caption_mode", "words") != "words":
+        parts += ["--caption-mode", cfg["caption_mode"]]
     if cfg.get("laughs"):
         parts += ["--laughs", cfg["laughs"]]
     if cfg.get("whisper_model") != WHISPER_MODEL_SIZE:
@@ -508,7 +513,8 @@ def run_pipeline(cfg: dict) -> None:
                         print(f"   -> clipe {i}: {len(in_clip)} risada(s) marcada(s)")
                     events = (events or []) + in_clip
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
-                         debug_dir=debug_dir, acoustic_events=events)
+                         debug_dir=debug_dir, acoustic_events=events,
+                         caption_mode=cfg.get("caption_mode", "words"))
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")
                 clips_failed += 1
@@ -593,9 +599,21 @@ def main() -> None:
     # Laboratório A/B de transcrição (sem VAD) — despacha antes do parse
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
     if len(sys.argv) > 1 and sys.argv[1] in (
-            "transcribe-lab", "lab-compare", "transcribe-approve", "finalize"):
+            "transcribe-lab", "lab-compare", "transcribe-approve", "finalize",
+            "caption-lab"):
         from core import translab as _lab
         import argparse as _ap
+        if sys.argv[1] == "caption-lab":
+            from core import captionlab as _cl
+            q = _ap.ArgumentParser(
+                description="Compara agrupamento words vs intervals num trecho real.")
+            q.add_argument("video", help="Vídeo de entrada")
+            q.add_argument("--start", type=float, default=0.0, help="Início (s)")
+            q.add_argument("--dur", type=float, default=30.0, help="Duração (s)")
+            q.add_argument("--cache-dir", default=None, help="Cache (ex: .cache/clipper)")
+            a = q.parse_args(sys.argv[2:])
+            _cl.run(a.video, a.start, a.dur, cache_dir=a.cache_dir)
+            return
         if sys.argv[1] == "transcribe-approve":
             q = _ap.ArgumentParser(
                 description="Valida work/<video>/transcription/words.txt editado e aprova.")
