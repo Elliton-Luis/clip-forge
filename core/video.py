@@ -182,10 +182,16 @@ def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[li
     """Núcleo compartilhado: agrupa objetos Word em cues (listas de Word).
 
     Usado por _group_cues() e pela auditoria WORD→CUE do debug. A regra de
-    quebra (gap > 0.4s, pontuação, 8 words, 48 chars) vive só aqui.
+    quebra (gap > 0.4s, pontuação, 8 words, 48 chars) vive só aqui, com uma
+    restrição estrutural: a quebra só acontece em FRONTEIRA de palavra. Um
+    token de continuação (sem espaço à esquerda, ex: "ita" em "dire"+"ita")
+    nunca inicia cue — sem isso, um gap do Whisper no meio da palavra gerava
+    "DIRE" / "ITA" em cues separadas. Em lotes sem fronteiras (estilo
+    faster-whisper), o comportamento é o histórico.
     """
     words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
+    has_boundaries = any(w.text[:1].isspace() for w in words if w.text)
     cues: list[list] = []
     cur: list = []
 
@@ -194,24 +200,34 @@ def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[li
             cues.append(list(cur))
             cur.clear()
 
-    for i, w in enumerate(words):
+    def is_continuation(w) -> bool:
+        return has_boundaries and not (w.text[:1].isspace() if w.text else True)
+
+    i = 0
+    n = len(words)
+    while i < n:
+        w = words[i]
         cur.append(w)
-        is_last = i == len(words) - 1
-        nxt = words[i + 1] if not is_last else None
-        should = is_last
-        if not should and nxt:
-            gap = nxt.start - w.end
-            ends = w.text.strip()[-1] in ".!?" if w.text.strip() else False
-            if gap > CAPTION_PAUSE_THRESHOLD:
-                should = True
-            elif ends and len(cur) >= 2:
-                should = True
-            elif len(cur) >= 8:
-                should = True
-            elif len(" ".join(x.text for x in cur)) > CAPTION_MAX_CHARS_PER_LINE * CAPTION_MAX_LINES_PER_CUE:
-                should = True
-        if should:
+        nxt = words[i + 1] if i + 1 < n else None
+        if nxt is None:
             flush()
+            break
+        gap = nxt.start - w.end
+        ends = w.text.strip()[-1] in ".!?" if w.text.strip() else False
+        should = (
+            gap > CAPTION_PAUSE_THRESHOLD
+            or (ends and len(cur) >= 2)
+            or len(cur) >= 8
+            or len(" ".join(x.text for x in cur)) > CAPTION_MAX_CHARS_PER_LINE * CAPTION_MAX_LINES_PER_CUE
+        )
+        if should:
+            # A pausa/limite é real, mas a palavra não pode partir: TODAS as
+            # continuações seguintes fecham o grupo atual; a quebra vale dali.
+            while i + 1 < n and is_continuation(words[i + 1]):
+                i += 1
+                cur.append(words[i])
+            flush()
+        i += 1
     return cues
 
 

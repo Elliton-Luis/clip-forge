@@ -13,7 +13,7 @@ from core.models import Word
 from core.video import (build_srt, build_ass, is_special_token,
                         clean_caption_text, highlight_words_from_title,
                         smart_join, build_hook_lines, validate_cues,
-                        render_caption_debug,
+                        render_caption_debug, _group_cues, _group_cue_words,
                         CAPTION_POP_OPEN, CAPTION_HIGHLIGHT_OPEN,
                         LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H, LAYOUT_BAND)
 
@@ -460,6 +460,47 @@ class TestMinDurationClamp(unittest.TestCase):
         self.assertIn("AUDITORIA WORD→CUE", txt)
         self.assertIn("Cue 00", txt)
         self.assertIn("status: OK", txt)
+
+
+class TestWordBoundaryGrouping(unittest.TestCase):
+    """Agrupador nunca parte palavra (ex: 'dire'+'ita' com gap do Whisper)."""
+
+    def test_gap_inside_word_keeps_together(self):
+        words = [W(" melhor", 17.17, 17.56), W(" cen", 17.67, 17.78),
+                 W("ário", 18.24, 18.31), W(" possível", 18.31, 19.0)]
+        cues = _group_cues(words, 0.0, 30.0)
+        texts = [c[2] for c in cues]
+        self.assertIn("MELHOR CENÁRIO", texts)
+        self.assertFalse(any(t == "CEN" for t in texts))
+        self.assertFalse(any(t.startswith("ÁRIO") for t in texts))
+
+    def test_pause_after_word_still_breaks(self):
+        words = [W(" cen", 17.67, 17.78), W("ário", 18.24, 18.31),
+                 W(" possível", 18.31, 19.0)]
+        groups = _group_cue_words(words, 0.0, 30.0)
+        self.assertEqual(len(groups), 2)  # pausa real respeitada após a palavra
+        self.assertEqual([w.text for w in groups[0]], [" cen", "ário"])
+
+    def test_multiple_continuations_stay_together(self):
+        words = [W(" a", 1.0, 1.2), W("pic", 1.3, 1.5), W("aret", 1.6, 1.8),
+                 W("ada", 2.4, 2.6), W(" fim", 2.7, 2.9)]
+        groups = _group_cue_words(words, 0.0, 30.0)
+        self.assertEqual([[w.text for w in g] for g in groups],
+                         [[" a", "pic", "aret", "ada"], [" fim"]])
+
+    def test_no_boundaries_keeps_history(self):
+        # Estilo faster-whisper (sem espaços): comportamento histórico.
+        words = [W("olhe", 10.0, 10.3), W("para", 10.9, 11.2)]
+        groups = _group_cue_words(words, 0.0, 30.0)
+        self.assertEqual(len(groups), 2)
+
+    def test_srt_never_shows_split_word(self):
+        words = [W(" pra", 302.0, 302.2), W(" dire", 302.26, 302.63),
+                 W("ita", 302.63, 302.9)]
+        srt = build_srt(words, 300.0, 330.0)
+        self.assertIn("DIREITA", srt)
+        self.assertNotIn("DIRE\n", srt)
+        self.assertNotIn(" ITA", srt.replace("DIREITA", ""))
 
 
 if __name__ == "__main__":
