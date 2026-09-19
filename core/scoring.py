@@ -130,11 +130,50 @@ def _call_nim(client, model: str, batch: list, prompt: str) -> tuple[dict, dict 
     return json.loads(content), tokens
 
 
-def _call_with_retry(client, model: str, batch: list, prompt: str, retries: int = 3,
+def _configured_keys() -> list[str]:
+    """Chaves presentes no env, sem exigir. Puro quanto à ordem."""
+    raw = os.environ.get("NVIDIA_API_KEYS", "")
+    keys = [k.strip() for k in raw.split(",") if k.strip()]
+    if not keys:
+        single = (os.environ.get("NVIDIA_API_KEY") or "").strip()
+        if single:
+            keys = [single]
+    return keys
+
+
+def _load_api_keys() -> list[str]:
+    """Chaves NVIDIA (rodízio por lote/tentativa). Puro quanto à ordem.
+
+    `NVIDIA_API_KEYS` (vírgula) tem prioridade; senão `NVIDIA_API_KEY` única.
+    Valores nunca são logados — só o índice (chave 1/2). Sem chave: erro claro.
+    """
+    keys = _configured_keys()
+    if not keys:
+        sys.exit("Erro: defina NVIDIA_API_KEY ou NVIDIA_API_KEYS "
+                 "(https://build.nvidia.com).")
+    return keys
+
+
+_key_cursor = 0  # rodízio global entre chaves (resetável em testes)
+
+
+def _next_client(clients: list):
+    """Próximo cliente em round-robin. Retorna (client, idx); valor nunca logado."""
+    global _key_cursor
+    idx = _key_cursor % len(clients)
+    _key_cursor += 1
+    return clients[idx], idx
+
+
+def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int = 3,
                      stats: dict | None = None) -> dict:
+    # clients: lista não-vazia de OpenAI; cada tentativa (incluindo retries
+    # após 503) usa a próxima chave — quota por conta diluída entre chamadas.
     backoffs = [10, 30, 60]
     last = None
+    nkeys = len(clients)
     for attempt in range(retries):
+        client, kidx = _next_client(clients)
         if stats is not None:
             stats["requests"] += 1
         t0 = time.time()
@@ -153,10 +192,12 @@ def _call_with_retry(client, model: str, batch: list, prompt: str, retries: int 
             return result
         except json.JSONDecodeError as e:
             last = e
-            print(f"      ! JSON inválido (tentativa {attempt+1}/{retries}): {e}")
+            print(f"      ! JSON inválido (tentativa {attempt+1}/{retries}, "
+                  f"chave {kidx+1}/{nkeys}): {e}")
         except Exception as e:
             last = e
-            print(f"      ! Erro NIM (tentativa {attempt+1}/{retries}): {e}")
+            print(f"      ! Erro NIM (tentativa {attempt+1}/{retries}, "
+                  f"chave {kidx+1}/{nkeys}): {e}")
         if stats is not None:
             stats["total_time"] += time.time() - t0
             if attempt == retries - 1:
@@ -180,22 +221,24 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
                 try:
                     metrics.set_nvidia(model=model, requests=0, successes=0,
                                        failures=0, retries=0, total_time_sec=0.0,
-                                       avg_latency_sec=None)
+                                       avg_latency_sec=None,
+                                       keys=len(_configured_keys()) or 1)
                 except Exception:
                     pass
             return candidates
 
     from openai import OpenAI
-    api_key = os.environ.get("NVIDIA_API_KEY")
-    if not api_key:
-        sys.exit("Erro: defina NVIDIA_API_KEY (https://build.nvidia.com).")
+    keys = _load_api_keys()
 
     # Auditoria (API): timeout explícito + max_retries=0 no client. Sem isso,
     # cada chamada poderia travar até 600s (default) e ainda sofrer retries
     # internos do SDK além dos nossos 3× com backoff 10/30/60 — paralisando um
     # job de 1h40. A única política de retry é _call_with_retry (limitada).
-    client = OpenAI(base_url=NVIDIA_BASE_URL, api_key=api_key,
-                    timeout=180, max_retries=0)
+    # Um client por chave: rodízio por lote e por tentativa (nunca loga valores).
+    clients = [OpenAI(base_url=NVIDIA_BASE_URL, api_key=k,
+                      timeout=180, max_retries=0) for k in keys]
+    if len(clients) > 1:
+        print(f"   -> rodízio entre {len(clients)} chaves NVIDIA (resiliência a quota/503)")
     examples = _load_examples(examples_path)
     prompt = _build_prompt(SYSTEM_PROMPT, context, examples)
 
@@ -210,7 +253,7 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
         batch = list(enumerate(candidates))[start:start + SEGMENTS_PER_SCORING_CALL]
         ids = {idx for idx, _ in batch}
         try:
-            result = _call_with_retry(client, model, batch, prompt, stats=stats)
+            result = _call_with_retry(clients, model, batch, prompt, stats=stats)
         except Exception as e:
             print(f"   ! Falha lote {start//SEGMENTS_PER_SCORING_CALL+1}/{n_batches}: {e}. Marcando sem nota.")
             for _, c in batch:
@@ -251,6 +294,7 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
                 completion_tokens=stats["completion_tokens"] or None,
                 total_tokens=stats["total_tokens"] or None,
                 cost=None,  # sem tabela de preços confiável => nunca estimar
+                keys=len(clients),
             )
             metrics.add_retries(stats["retries"])
         except Exception:

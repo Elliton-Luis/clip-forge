@@ -120,6 +120,9 @@ pip install -r requirements.txt
 
 # 3. chave grátis do scoring (https://build.nvidia.com)
 export NVIDIA_API_KEY="nvapi-sua-chave-aqui"
+# Opcional: 2+ chaves (suas ou com consentimento) em rodízio por lote/tentativa
+# contra quota/503 — valores nunca aparecem em log, só o índice (chave 1/2):
+# export NVIDIA_API_KEYS="nvapi-chave-1,nvapi-chave-2"
 export NIM_MODEL="nvidia/nemotron-3-super-120b-a12b"   # default atual; ajuste conforme o catálogo
 
 # 4. backend Vulkan da transcrição (uma vez; detalhe na seção GPU)

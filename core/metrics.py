@@ -270,7 +270,7 @@ class ExecutionMetrics:
             "model": None, "requests": 0, "successes": 0, "failures": 0,
             "retries": 0, "total_time_sec": None, "avg_latency_sec": None,
             "prompt_tokens": None, "completion_tokens": None,
-            "total_tokens": None, "cost": None,
+            "total_tokens": None, "cost": None, "keys": 1,
         }
         self.ffmpeg: dict = {
             "backend": None, "encoder": None, "decoder": None,
