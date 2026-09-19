@@ -19,6 +19,7 @@ from pathlib import Path
 
 from core.config import (
     DEFAULT_MODEL, DEFAULT_PAD_SECONDS, DEFAULT_MIN_SCORE, DEFAULT_MAX_PER_10MIN,
+    MIN_CLIP_SECONDS, MAX_CLIP_SECONDS,
     CLIPPER_TRANSCRIBE_BACKEND, CLIPPER_CPU_THREADS, CLIPPER_FFMPEG_THREADS,
     WHISPER_MODEL_SIZE,
 )
@@ -62,6 +63,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force-retranscribe", action="store_true", help="Ignora cache transcrição")
     p.add_argument("--force-rescore", action="store_true", help="Ignora cache scores")
     p.add_argument("--pad", type=float, default=DEFAULT_PAD_SECONDS, help=f"Respiro antes/depois (padrão: {DEFAULT_PAD_SECONDS}s)")
+    p.add_argument("--min-duration", type=float, default=MIN_CLIP_SECONDS, help=f"Duração mínima do clipe (padrão: {MIN_CLIP_SECONDS}s)")
+    p.add_argument("--max-duration", type=float, default=MAX_CLIP_SECONDS, help=f"Duração máxima do clipe, sempre respeitada (padrão: {MAX_CLIP_SECONDS}s)")
     p.add_argument("--no-audio-features", action="store_true", help="Desativa energia de áudio")
     p.add_argument("--min-score", type=float, default=DEFAULT_MIN_SCORE, help=f"Score mínimo (padrão: {DEFAULT_MIN_SCORE})")
     p.add_argument("--max-per-10min", type=int, default=DEFAULT_MAX_PER_10MIN, help=f"Máximo por 10min (padrão: {DEFAULT_MAX_PER_10MIN})")
@@ -95,6 +98,7 @@ def parse_cli(argv=None):
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
+    "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
     "review_transcript", "review_titles", "work_dir", "custom_words",
@@ -122,6 +126,8 @@ def config_from_args(args) -> dict:
         "force_retranscribe": bool(args.force_retranscribe),
         "force_rescore": bool(args.force_rescore),
         "pad": args.pad,
+        "min_duration": args.min_duration,
+        "max_duration": args.max_duration,
         "no_audio_features": bool(args.no_audio_features),
         "min_score": args.min_score,
         "max_per_10min": args.max_per_10min,
@@ -148,6 +154,8 @@ def validate_config(cfg: dict) -> None:
         sys.exit("--min-score deve estar entre 0 e 10")
     if not (1 <= cfg["max_per_10min"] <= 20):
         sys.exit("--max-per-10min deve estar entre 1 e 20")
+    if not (0 < cfg["min_duration"] <= cfg["max_duration"] <= 600):
+        sys.exit("--min-duration/--max-duration exigem 0 < min <= max <= 600")
 
 
 def cli_command(cfg: dict) -> str:
@@ -170,6 +178,10 @@ def cli_command(cfg: dict) -> str:
         parts.append("--force-rescore")
     if cfg["pad"] != DEFAULT_PAD_SECONDS:
         parts += ["--pad", str(cfg["pad"])]
+    if cfg["min_duration"] != MIN_CLIP_SECONDS:
+        parts += ["--min-duration", str(cfg["min_duration"])]
+    if cfg["max_duration"] != MAX_CLIP_SECONDS:
+        parts += ["--max-duration", str(cfg["max_duration"])]
     if cfg["no_audio_features"]:
         parts.append("--no-audio-features")
     if cfg["min_score"] != DEFAULT_MIN_SCORE:
@@ -355,6 +367,7 @@ def run_pipeline(cfg: dict) -> None:
         "top": cfg["top"], "model": cfg["model"], "transcribe_backend": cfg["transcribe_backend"],
         "whisper_model": WHISPER_MODEL_SIZE, "cpu_threads": CLIPPER_CPU_THREADS,
         "ffmpeg_threads": CLIPPER_FFMPEG_THREADS, "pad": cfg["pad"],
+        "min_duration": cfg["min_duration"], "max_duration": cfg["max_duration"],
         "min_score": cfg["min_score"], "max_per_10min": cfg["max_per_10min"],
         "vertical": not cfg["no_vertical"], "captions": not cfg["no_captions"],
         "audio_features": not cfg["no_audio_features"],
@@ -391,10 +404,15 @@ def run_pipeline(cfg: dict) -> None:
                 segments = _pause_for_transcript_review(cfg, video, segments)
         stage = "candidates"
         with metrics.stage("candidates"):
-            candidates = build_candidates(segments)
+            candidates = build_candidates(segments, min_dur=cfg["min_duration"],
+                                          max_dur=cfg["max_duration"])
             if not candidates:
                 sys.exit("Nenhum candidato encontrado (vídeo sem fala?).")
-            candidates = snap_all(candidates, pad=cfg["pad"])
+            from core.backends import probe_duration as _probe
+            candidates = snap_all(candidates, pad=cfg["pad"],
+                                  min_dur=cfg["min_duration"],
+                                  max_dur=cfg["max_duration"],
+                                  media_end=_probe(video))
         metrics.set_counts(candidates=len(candidates))
 
         stage = "audio"

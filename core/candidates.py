@@ -9,7 +9,12 @@ from .config import (
 )
 
 
-def build(segments: list) -> list[Candidate]:
+def build(segments: list, min_dur: float = MIN_CLIP_SECONDS,
+          max_dur: float = MAX_CLIP_SECONDS) -> list[Candidate]:
+    """Janelas deslizantes de [min_dur, max_dur]. MAX é teto real: nenhuma
+    janela nasce maior que max_dur (o --pad também nunca estoura, ver _snap_one)."""
+    if not (0 < min_dur <= max_dur):
+        raise ValueError(f"range inválido: min={min_dur} max={max_dur} (exige 0 < min <= max)")
     if not segments:
         return []
     cands: list[Candidate] = []
@@ -22,11 +27,11 @@ def build(segments: list) -> list[Candidate]:
         start_time = max(cursor, segments[start_idx].start)
         j = start_idx
         end_time = segments[j].end
-        while j < n - 1 and (segments[j + 1].end - start_time) <= MAX_CLIP_SECONDS:
+        while j < n - 1 and (segments[j + 1].end - start_time) <= max_dur:
             j += 1
             end_time = segments[j].end
 
-        if end_time - start_time >= MIN_CLIP_SECONDS:
+        if end_time - start_time >= min_dur:
             words, texts = [], []
             for k in range(start_idx, j + 1):
                 texts.append(segments[k].text)
@@ -46,7 +51,10 @@ def build(segments: list) -> list[Candidate]:
     return cands
 
 
-def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS) -> Candidate:
+def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS,
+              min_dur: float = MIN_CLIP_SECONDS,
+              max_dur: float = MAX_CLIP_SECONDS,
+              media_end: float | None = None) -> Candidate:
     if not c.words:
         return c
     words = sorted(c.words, key=lambda w: w.start)
@@ -67,6 +75,21 @@ def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS) -> Candidate:
     snapped_end = best_end + pad
     if snapped_end <= snapped_start:
         snapped_end = snapped_start + 1.0
+    # --pad nunca quebra MAX: corta o excesso do fim (início já é snap+pad).
+    if snapped_end - snapped_start > max_dur:
+        snapped_end = snapped_start + max_dur
+    # Abaixo do MIN: expande contexto (início p/ trás até 0, resto p/ frente
+    # até media_end). Se nem assim alcança (mídia curta), mantém curto —
+    # nunca estoura MAX para compensar.
+    if snapped_end - snapped_start < min_dur:
+        need = min_dur - (snapped_end - snapped_start)
+        back = min(need, snapped_start)
+        snapped_start -= back
+        need -= back
+        if need > 0:
+            fwd_end = media_end if media_end is not None else snapped_end + need
+            snapped_end = min(snapped_end + need, fwd_end,
+                              snapped_start + max_dur)
 
     if abs(snapped_start - orig_start) > 0.05 or abs(snapped_end - orig_end) > 0.05:
         c.original_start, c.original_end = orig_start, orig_end
@@ -77,9 +100,12 @@ def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS) -> Candidate:
     return c
 
 
-def snap_all(candidates: list[Candidate], pad: float) -> list[Candidate]:
+def snap_all(candidates: list[Candidate], pad: float,
+             min_dur: float = MIN_CLIP_SECONDS,
+             max_dur: float = MAX_CLIP_SECONDS,
+             media_end: float | None = None) -> list[Candidate]:
     for c in candidates:
-        _snap_one(c, pad)
+        _snap_one(c, pad, min_dur, max_dur, media_end)
     n = sum(1 for c in candidates if c.snapped)
-    print(f"   -> {n}/{len(candidates)} candidatos com snap (pad={pad}s, tol=±{SNAP_TOLERANCE_SECONDS}s)")
+    print(f"   -> {n}/{len(candidates)} candidatos com snap (pad={pad}s, tol=±{SNAP_TOLERANCE_SECONDS}s, range=[{min_dur},{max_dur}]s)")
     return candidates

@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 
 from core.config import DEFAULT_MODEL, CLIPPER_TRANSCRIBE_BACKEND
+from core.config import MIN_CLIP_SECONDS, MAX_CLIP_SECONDS
 
 MODELS_PATH = Path(__file__).resolve().parent.parent / "config" / "models.json"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".flv", ".mpg", ".mpeg"}
@@ -135,6 +136,12 @@ def validate_for_run(cfg: dict) -> list[str]:
             errs.append("--max-per-10min deve estar entre 1 e 20")
     except (TypeError, ValueError):
         errs.append("--max-per-10min deve ser um inteiro entre 1 e 20")
+    try:
+        mind, maxd = float(cfg.get("min_duration")), float(cfg.get("max_duration"))
+        if not (0 < mind <= maxd <= 600):
+            errs.append("--min/max-duration exigem 0 < min <= max <= 600")
+    except (TypeError, ValueError):
+        errs.append("--min/max-duration devem ser números (0 < min <= max <= 600)")
     if not cfg.get("model"):
         errs.append("Modelo inválido (vazio)")
     if cfg.get("transcribe_backend") not in ("auto", "gpu", "vulkan", "openvino", "cpu"):
@@ -151,6 +158,7 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         ("Clipes", str(cfg.get("top"))),
         ("Score mínimo", str(cfg.get("min_score"))),
         ("Padding", f"{cfg.get('pad')}s"),
+        ("Duração", f"{cfg.get('min_duration')}–{cfg.get('max_duration')}s"),
         ("Máx/10min", str(cfg.get("max_per_10min"))),
         ("Vertical", "sim" if not cfg.get("no_vertical") else "não"),
         ("Legendas", "sim" if not cfg.get("no_captions") else "não"),
@@ -233,6 +241,8 @@ class TUI:
             ("top", "Quantidade de clipes", "int"),
             ("min_score", "Score mínimo (0–10)", "float"),
             ("pad", "Padding em segundos (0–5)", "float"),
+            ("min_duration", "Duração mínima do clipe (s)", "float"),
+            ("max_duration", "Duração máxima do clipe (s)", "float"),
             ("max_per_10min", "Máximo por 10 min (1–20)", "int"),
             ("vertical", "Vídeo vertical", "bool"),
             ("captions", "Legendas", "bool"),
