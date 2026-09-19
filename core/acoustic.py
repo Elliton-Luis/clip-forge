@@ -33,6 +33,13 @@ MIN_EVENT_SEC = 0.3  # abaixo disso é transiente, não evento
 SAT_SAMPLE = 32000   # |x| >= ~0.977 em s16 = saturado (p/ estatísticas)
 
 EVENT_TEXT = "*ÁUDIO ESTOURADO"
+EVENT_TEXTS = {
+    "clipped-audio": "*ÁUDIO ESTOURADO",
+    # "laugh" (marcado pelo usuário, ver load_laughs): detector automático
+    # recusado com evidência — nenhuma assinatura barata separa risada de
+    # grito nos samples marcados (pico/RMS/ZCR/envelope/aspereza sobrepõem).
+    "laugh": "*RISADA ESTOURADA",
+}
 
 
 @dataclass
@@ -168,5 +175,40 @@ def event_cues(events: list[AcousticEvent], clip_start: float,
         if e - s < 1.0:
             e = min(clip_end, s + 1.0)
         if e > s:
-            out.append((s, e, EVENT_TEXT))
+            out.append((s, e, EVENT_TEXTS.get(ev.type, EVENT_TEXT)))
     return sorted(out)
+
+
+def load_laughs(path: str | None) -> list[AcousticEvent]:
+    """Ranges de risada marcados pelo usuário → eventos (ground truth humano).
+
+    Formato (segundos, um range por linha; `#` comenta):
+        18 23
+        27 30
+    Linha malformada ou end <= start = erro claro (nunca chute). Sem
+    detecção: quem marca é o usuário, então o rótulo é sempre honesto.
+    """
+    if not path:
+        return []
+    from pathlib import Path as _P
+    events = []
+    try:
+        lines = _P(path).read_text(encoding="utf-8").splitlines()
+    except OSError as e:
+        raise RuntimeError(f"laughs inválido ({path}): {e}")
+    for lineno, line in enumerate(lines, start=1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        parts = line.split()
+        try:
+            s, e = float(parts[0]), float(parts[1])
+        except (ValueError, IndexError):
+            raise RuntimeError(
+                f"laughs {path}:{lineno}: esperado 'INICIO FIM' em segundos")
+        if not (e > s >= 0) or len(parts) != 2:
+            raise RuntimeError(
+                f"laughs {path}:{lineno}: range inválido ({line!r})")
+        events.append(AcousticEvent(type="laugh", start=s, end=e,
+                                    confidence=1.0))
+    return events

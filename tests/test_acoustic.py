@@ -108,6 +108,48 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestLaughs(unittest.TestCase):
+    def test_load_valid(self):
+        import tempfile
+        from core.acoustic import load_laughs, event_cues, EVENT_TEXTS
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "laughs.txt"
+            p.write_text("# risadas\n18 23\n27 30\n", encoding="utf-8")
+            evs = load_laughs(str(p))
+            self.assertEqual(len(evs), 2)
+            self.assertEqual(evs[0].type, "laugh")
+            self.assertAlmostEqual(evs[0].start, 18.0)
+            self.assertAlmostEqual(evs[1].end, 30.0)
+            self.assertEqual(evs[0].confidence, 1.0)
+            cues = event_cues(evs, 0.0, 60.0)
+            self.assertEqual(cues[0][2], EVENT_TEXTS["laugh"])
+            self.assertEqual(cues[0][2], "*RISADA ESTOURADA")
+
+    def test_load_none(self):
+        from core.acoustic import load_laughs
+        self.assertEqual(load_laughs(None), [])
+
+    def test_load_malformed(self):
+        import tempfile
+        from core.acoustic import load_laughs
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "laughs.txt"
+            p.write_text("18\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                load_laughs(str(p))
+            p.write_text("30 18\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                load_laughs(str(p))
+            with self.assertRaises(RuntimeError):
+                load_laughs(str(Path(d) / "nao-existe.txt"))
+
+    def test_laugh_cue_yellow(self):
+        from core.video import build_ass, CAPTION_HIGHLIGHT_OPEN
+        ass = build_ass([Word(" fala", 10.0, 11.0)], 0.0, 30.0, 1080, 1920,
+                        event_cues=[(20.0, 21.0, "*RISADA ESTOURADA")])
+        self.assertIn(CAPTION_HIGHLIGHT_OPEN + "*RISADA ESTOURADA", ass)
+
+
 class TestWordEnergy(unittest.TestCase):
     def test_rms_between(self):
         from core.acoustic import rms_between, SAMPLE_RATE

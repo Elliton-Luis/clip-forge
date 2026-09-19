@@ -61,6 +61,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-captions", action="store_true", help="Não queimar legendas")
     p.add_argument("--acoustic-captions", action="store_true",
                    help="Queima *ÁUDIO ESTOURADO* nos trechos com clipping (experimental, off)")
+    p.add_argument("--laughs", default=None,
+                   help="Arquivo com ranges de risada 'INICIO FIM' (s) por linha — queima *RISADA ESTOURADA* em amarelo")
     p.add_argument("--cache-dir", default=None, help="Diretório de cache (ex: .cache/clipper)")
     p.add_argument("--force-retranscribe", action="store_true", help="Ignora cache transcrição")
     p.add_argument("--force-rescore", action="store_true", help="Ignora cache scores")
@@ -102,7 +104,7 @@ def parse_cli(argv=None):
 
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
-    "acoustic_captions", "whisper_model",
+    "acoustic_captions", "whisper_model", "laughs",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
@@ -129,6 +131,7 @@ def config_from_args(args) -> dict:
         "no_vertical": bool(args.no_vertical),
         "no_captions": bool(args.no_captions),
         "acoustic_captions": bool(args.acoustic_captions),
+        "laughs": args.laughs,
         "whisper_model": args.whisper_model,
         "cache_dir": args.cache_dir,
         "force_retranscribe": bool(args.force_retranscribe),
@@ -185,6 +188,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-captions")
     if cfg.get("acoustic_captions"):
         parts.append("--acoustic-captions")
+    if cfg.get("laughs"):
+        parts += ["--laughs", cfg["laughs"]]
     if cfg.get("whisper_model") != WHISPER_MODEL_SIZE:
         parts += ["--whisper-model", cfg["whisper_model"]]
     if cfg["cache_dir"]:
@@ -476,6 +481,11 @@ def run_pipeline(cfg: dict) -> None:
             debug_dir.mkdir(parents=True, exist_ok=True)
             write_human_transcript(segments, debug_dir / "transcript.txt")
             print(f"   -> debug de legendas em: {debug_dir.resolve()}")
+        _laughs = []
+        if cfg.get("laughs"):
+            from core import acoustic as _ac
+            _laughs = _ac.load_laughs(cfg["laughs"])
+            print(f"   -> {len(_laughs)} risada(s) marcada(s) em {cfg['laughs']}")
         for i, c in enumerate(selected, start=1):
             name = sanitize_filename(c.title, f"clipe_{i}")
             out = out_dir / f"{i:02d}_{name}.mp4"
@@ -491,6 +501,12 @@ def run_pipeline(cfg: dict) -> None:
                     events, _stats = _ac.detect_clipping(video, c.start, c.duration)
                     if events:
                         print(f"   -> clipe {i}: {len(events)} trecho(s) estourado(s)")
+                if _laughs:
+                    in_clip = [e for e in _laughs
+                               if e.end > c.start and e.start < c.end]
+                    if in_clip:
+                        print(f"   -> clipe {i}: {len(in_clip)} risada(s) marcada(s)")
+                    events = (events or []) + in_clip
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
                          debug_dir=debug_dir, acoustic_events=events)
             except Exception as e:

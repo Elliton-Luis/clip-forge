@@ -228,8 +228,13 @@ Evidência medida (2026-09-19, medium, trechos de 30 s):
 0.15 por ≥ 0.3 s; calibrado: áudio limpo = 0 eventos). Resultado vai ao
 manifest (`acoustic_events` com `start/end/type/confidence`) e ao debug.
 Queimar `*ÁUDIO ESTOURADO*` na legenda é opt-in: `--acoustic-captions`
-(a palavra sempre vence o evento em overlap). Risada **não** é detectada:
-sem assinatura confiável só com volume — veredito em `docs/caption-audit.md`.
+(a palavra sempre vence o evento em overlap). Eventos saem em **amarelo**
+(mesmo destaque do título; SRT segue texto puro, sem cor). Risada **não** é
+detectada automaticamente: nos samples marcados (DerrubandoKit 18–23 e 27–30)
+pico/RMS/ZCR/envelope/aspereza sobrepõem fala alta — sem assinatura confiável.
+Para marcar risada (ground truth humano): `--laughs risadas.txt` (linhas
+`INICIO FIM` em segundos) queima `*RISADA ESTOURADA*` em amarelo nos ranges,
+via o mesmo caminho (lanes, manifest, debug).
 
 ### Duração dos clips
 
@@ -340,6 +345,7 @@ invalida transcripts antigos (era VAD nunca volta por cache).
 | `--min-duration S` | Duração mínima do clipe (expande contexto) | 20 |
 | `--max-duration S` | Duração máxima do clipe (teto real) | 90 |
 | `--acoustic-captions` | Queima *ÁUDIO ESTOURADO* (experimental) | off |
+| `--laughs FILE` | Ranges `INICIO FIM` p/ *RISADA ESTOURADA* amarela | — |
 | `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
 | `--no-captions` | Sem legenda queimada | legenda on |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
