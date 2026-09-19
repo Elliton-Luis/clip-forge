@@ -10,6 +10,7 @@ Mantém compatibilidade: `python clipper.py video.mp4 --out cortes/`
 """
 import argparse
 import json
+import os
 import re
 import shlex
 import sys
@@ -198,13 +199,72 @@ def cli_command(cfg: dict) -> str:
 # 3b. Revisão humana (transcrição aprovada = fonte da verdade)
 # ----------------------------------------------------------------------------
 
+def _read_line_raw(msg: str) -> str:
+    """Lê uma linha aceitando Enter como \\r ou \\n, com eco manual.
+
+    Imune a tty com icrnl desligado (resto de sessão curses/editor), onde
+    input() exibiria ^M sem nunca submeter a linha. Ctrl+C cancela.
+    """
+    import tty as _tty
+    import termios as _termios
+    sys.stdout.write(msg)
+    sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    if not sys.stdin.isatty():
+        raise EOFError("stdin não é tty")
+    old = _termios.tcgetattr(fd)
+    buf: list[str] = []
+    try:
+        _tty.setraw(fd)  # sem tradução de linha: aceitamos CR e LF
+        while True:
+            ch = os.read(fd, 1)
+            if ch in (b"\r", b"\n"):
+                break
+            if ch == b"\x03":
+                raise KeyboardInterrupt
+            if ch in (b"\x7f", b"\x08"):
+                if buf:
+                    buf.pop()
+                    sys.stdout.write("\b \b")
+                    sys.stdout.flush()
+                continue
+            if ch == b"":
+                raise EOFError
+            if b" " <= ch <= b"~":
+                buf.append(ch.decode("ascii"))
+                sys.stdout.write(ch.decode("ascii"))
+                sys.stdout.flush()
+    finally:
+        _termios.tcsetattr(fd, _termios.TCSADRAIN, old)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return "".join(buf)
+
+
 def _pause(msg: str) -> None:
-    """Pausa interativa. EOF (não-interativo) = aborta, nunca aprova cego."""
+    """Pausa interativa (Enter confirma). EOF = aborta, nunca aprova cego."""
+    try:
+        _read_line_raw(msg)
+        return
+    except (ImportError, OSError, ValueError, EOFError):
+        pass  # sem termios/tty: tenta o input() clássico abaixo
     try:
         input(msg)
     except EOFError:
         sys.exit("Entrada não-interativa: revisão humana exige terminal. "
                  "Edite os arquivos em work/ e use transcribe-approve.")
+
+
+def _ask_confirm(msg: str) -> bool:
+    """Pergunta Y/N imune a tty sem icrnl (mesma causa do ^M no _pause)."""
+    try:
+        ans = _read_line_raw(msg)
+    except (ImportError, OSError, ValueError, EOFError):
+        try:
+            ans = input(msg)
+        except EOFError:
+            return False
+    return ans.strip().lower() in ("y", "yes", "s", "sim")
 
 
 def _session_for(cfg: dict, video: str) -> Path:
@@ -502,13 +562,10 @@ def main() -> None:
             approved = session / "transcription" / "transcript.json"
             _rev.require_approved(approved)  # nunca apaga antes da aprovação final
             if not a.yes:
-                try:
-                    ans = input(f"Tem certeza que deseja finalizar?\n"
-                                f"Isso removerá os intermediários em {session}.\n"
-                                f"Finais em {out} + cópia da transcrição aprovada serão mantidos.\n[Y/N] ")
-                except EOFError:
-                    sys.exit("Finalização cancelada (sem confirmação).")
-                if ans.strip().lower() not in ("y", "yes", "s", "sim"):
+                if not _ask_confirm(
+                        f"Tem certeza que deseja finalizar?\n"
+                        f"Isso removerá os intermediários em {session}.\n"
+                        f"Finais em {out} + cópia da transcrição aprovada serão mantidos.\n[Y/N] "):
                     sys.exit("Finalização cancelada.")
             out.mkdir(parents=True, exist_ok=True)
             (out / "approved-transcript.json").write_text(
