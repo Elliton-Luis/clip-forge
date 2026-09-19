@@ -505,6 +505,12 @@ def run(cfg: dict | None = None):
     if cfg is None:
         from clipper import default_config  # tardio: evita import circular
         cfg = default_config()
+    # Carrega .env para pegar NVIDIA_API_KEY (igual ao CLI)
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     try:
         models = load_models()
     except (OSError, ValueError) as e:

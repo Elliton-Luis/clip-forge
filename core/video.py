@@ -276,12 +276,107 @@ CAPTION_POP_OPEN = r"{\fscx92\fscy92\t(0,120,\fscx104\fscy104)\t(120,280,\fscx10
 # 1400 → bandas de 260 (73% vídeo); 1200 → bandas de 360 (62% vídeo).
 LAYOUT_W, LAYOUT_H, LAYOUT_MAIN_H = 1080, 1920, 1200
 LAYOUT_BAND = (LAYOUT_H - LAYOUT_MAIN_H) // 2  # 360
-# Hook de abertura: título do scoring (NUNCA filename fallback — não inventar).
-HOOK_START_SEC = 0.3
-HOOK_END_SEC = 2.8
+# Cores fixas por locutor (quando diarização disponível).
+# Determinísticas: mesma ordem de aparição → mesma cor.
+SPEAKER_COLORS: dict[str, str] = {
+    "A": "&H00FFFFFF",  # branco
+    "B": "&H00E5D100",  # amarelo
+    "C": "&H0000BFFF",  # azul
+    "D": "&H0000FF00",  # verde
+}
+# Cor fixa por locutor
+
+
+def _speaker_color(speaker_id: str) -> str:
+    """Retorna cor ASS fixa para o locutor. Determinística."""
+    return SPEAKER_COLORS.get(speaker_id, SPEAKER_COLORS.get("A", "&H00FFFFFF"))
+
+
+# Ordem determinística de atribuição de cores quando não há diarização.
+SPEAKER_ORDER: list[str] = ["A", "B", "C", "D"]
+
 HOOK_FONT_SIZE = 68
 HOOK_MAX_CHARS_PER_LINE = 18
 HOOK_MARGIN_V = 320  # top-center, abaixo da faixa superior; some em 2.8s
+HOOK_END_SEC = 2.8
+HOOK_START_SEC = 0.3
+
+# Lanes verticais (anti-overlap): faixa inferior dividida em slots de altura
+# real de linha (Montserrat ExtraBold 54px + outline/sombra, medido via PIL:
+# ~69px → slot 72). Cue de N linhas ocupa N slots contíguos. Regra de
+# liberação: slot livre se fim_anterior <= início (fim==início NÃO é overlap).
+LANE_SLOT_H = 72
+LANE_MAX_SLOTS = 5
+LANE_MARGIN_V_BASE = CAPTION_MARGIN_V  # 140: slot 0 encostado na base
+
+
+def _speaker_id_from_text(text: str) -> str | None:
+    """Extrai um ID de locutor a partir do texto da legenda.
+
+    Procura por padrões como 'PESSOA A:', 'SPEAKER A:', 'VOICE_A:', etc.
+    Retorna o ID ou None se não houver padrão reconhecido.
+    """
+    m = re.match(r"^[^:\n]*(?:A|B|C|D)\s*:\s*", text or "")
+    if m:
+        return m.group(1)
+    # Padrões alternativos: VOICE_A, SPEAKER_A no início
+    m = re.match(r"^[^:\n]*(?:VOICE|SPEAKER)\s*[ _-]?([A-D])[^:\n]*:?", text or "")
+    if m:
+        return m.group(1)
+    return None
+
+
+def assign_lanes(
+    cues: list[tuple],
+    speaker_map: dict[str, str] | None = None,
+) -> list[tuple]:
+    """Atribui (cs, ce, texto) → (cs, ce, texto, lane_base, span, speaker_id, color).
+
+    Cada cue ocupa `span` slots contíguos livres no seu início; reutiliza
+    as mais baixas. Máximo LANE_MAX_SLOTS; se não couber, reutiliza a lane 0.
+    speaker_map: dict mapeando speaker_id → nome legível (opcional, para cores).
+
+    O lane é determinado exclusivamente pelo conflito temporal. Duas captions
+    simultâneas NUNCA compartilham a mesma lane. A cor do locutor é aplicada
+    separadamente no renderer (não influencia o lane).
+    """
+    slots = [float("-inf")] * LANE_MAX_SLOTS
+    out: list[tuple] = []
+    overflowed = False
+
+    # Determina ID de locutor para cada cue (se speaker_map fornecido)
+    cue_speakers: list[str | None] = []
+    if speaker_map:
+        for cs, ce, text in sorted(cues, key=lambda c: (c[0], c[1])):
+            sid = _speaker_id_from_text(text)
+            # Se o texto já tem um ID de locutor embutido, usa-se;
+            # senão, atribui o próximo da ordem determinística.
+            if sid is None:
+                # atribui baseado na ordem de aparição
+                sid = SPEAKER_ORDER[len(cue_speakers) % len(SPEAKER_ORDER)]
+                cue_speakers.append(sid)
+            else:
+                cue_speakers.append(sid)
+    else:
+        cue_speakers = [None] * len(cues)
+
+    for idx, (cs, ce, text) in enumerate(sorted(cues, key=lambda c: (c[0], c[1]))):
+        nlines = max(1, text.count("\n") + 1)
+        k = min(nlines, LANE_MAX_SLOTS)
+        base = None
+        for i in range(LANE_MAX_SLOTS - k + 1):
+            if all(slots[j] <= cs + 1e-6 for j in range(i, i + k)):
+                base = i
+                break
+        if base is None:
+            base, k, overflowed = 0, min(nlines, LANE_MAX_SLOTS), True
+        for j in range(base, base + k):
+            slots[j] = max(slots[j], ce)
+
+        speaker = cue_speakers[idx] if idx < len(cue_speakers) else None
+        color = _speaker_color(speaker) if speaker else None
+        out.append((cs, ce, text, base, k, speaker, color, overflowed and base == 0))
+    return out
 
 
 def build_hook_lines(title: str) -> list[str]:
@@ -373,7 +468,29 @@ def build_ass(words: list, clip_start: float, clip_end: float,
         if animate:
             text = CAPTION_POP_OPEN + text
         lines.append(f"Dialogue: 0,{_ass_time(cs)},{_ass_time(ce)},Clip,,0,0,0,,{text}")
+    _assign_dialogue_lanes(lines, cues)
     return "\n".join(lines) + "\n"
+
+
+def _assign_dialogue_lanes(lines: list[str], cues: list[tuple]) -> None:
+    """Aplica lanes anti-overlap in-place nas linhas Dialogue (menos hook).
+
+    Cada cue ganha MarginV própria = base + lane*SLOT_H (a partir da base da
+    faixa inferior). Cues simultâneas nunca compartilham a mesma coordenada;
+    livres são reutilizadas; no máximo LANE_MAX_SLOTS, com fallback p/ lane 0.
+    """
+    laned = assign_lanes(cues)
+    di = 0
+    for i, line in enumerate(lines):
+        if not line.startswith("Dialogue:") or ",Clip,," not in line:
+            continue
+        if di >= len(laned):
+            break
+        _, _, _, base, _, _, _, _ = laned[di]
+        di += 1
+        head, _, text = line.partition(",,0,0,0,,")
+        mv = LANE_MARGIN_V_BASE + base * LANE_SLOT_H
+        lines[i] = f"{head},,0,0,{mv},,{text}"
 
 
 def _escape_subs(path: str) -> str:
@@ -381,9 +498,15 @@ def _escape_subs(path: str) -> str:
 
 
 def _fmt_ts(t: float) -> str:
+    if t < 0:
+        sign = "-"
+        t = -t
+    else:
+        sign = ""
     h = int(t // 3600)
     m = int((t % 3600) // 60)
-    return f"{h:02d}:{m:02d}:{t % 60:06.3f}"
+    s = t % 60
+    return f"{sign}{h:02d}:{m:02d}:{s:06.3f}" if h > 0 or m > 0 or s > 0 else f"{sign}00:00:00.000"
 
 
 def validate_cues(words: list, clip_start: float, clip_end: float,
@@ -416,6 +539,57 @@ def validate_cues(words: list, clip_start: float, clip_end: float,
     return warns
 
 
+def _timestamp_investigation(clip_start: float, clip_end: float,
+                              words: list, cues: list[tuple]) -> str:
+    """Gera relatório de deslocamento no início da timeline.
+
+    Mostra a cadeia: vídeo → áudio → whisper → chunk → clip → legenda.
+    Use os valores reais para identificar onde ocorre o deslocamento.
+    """
+    # Primeiro/última palavra do Whisper dentro do clip
+    first_word_abs = None
+    last_word_abs = None
+    for w in sorted(words, key=lambda x: x.start):
+        if w.end > clip_start and w.start < clip_end and w.text.strip():
+            if first_word_abs is None:
+                first_word_abs = w.start
+            last_word_abs = w.end
+
+    # Primeiro/último cue no clip
+    first_cs = None
+    last_ce = None
+    for cs, ce, text in cues:
+        if first_cs is None or cs < first_cs:
+            first_cs = cs
+        if last_ce is None or ce > last_ce:
+            last_ce = ce
+
+    lines = [
+        "INVESTIGAÇÃO DE DESLOCAMENTO NO INÍCIO",
+        "",
+        "VIDEO START:        " + _fmt_ts(0.0),
+        "AUDIO START:        " + _fmt_ts(clip_start),
+        "CHUNK START:        " + _fmt_ts(clip_start),
+        "WHISPER FIRST WORD: " + (_fmt_ts(first_word_abs) if first_word_abs is not None else "N/A"),
+        "CLIP START:         " + _fmt_ts(clip_start),
+        "RELATIVE FIRST WORD: " + (_fmt_ts(first_word_abs - clip_start) if first_word_abs is not None else "N/A"),
+        "CAPTION FIRST START: " + _fmt_ts(first_cs) if first_cs is not None else "CAPTION FIRST START: N/A",
+        "",
+        "Expected (all should be 0.000 relative):",
+        "  Se WHISPER FIRST WORD ≠ 0.000 relativo: o Whisper tem seu próprio início de áudio.",
+        "  Se CAPTION FIRST START ≠ 0.000 relativo: o _group_cues/ _split_lines deslocou.",
+        "  Se houver delta real, ele é a origem do problema de timing.",
+        "",
+        "Delta calculado:",
+        f"  WHISPER FIRST WORD rel: {_fmt_ts(first_word_abs - clip_start) if first_word_abs is not None else 'N/A'}",
+        f"  CAPTION FIRST START:   {_fmt_ts(first_cs) if first_cs is not None else 'N/A'}",
+        f"  DELTA:                  {_fmt_ts((first_cs if first_cs is not None else 0) - (first_word_abs - clip_start) if first_word_abs is not None else 0)}",
+        "",
+        "--- FIM DO RELATÓRIO ---",
+    ]
+    return "\n".join(lines)
+
+
 def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
                          words: list, cues: list[tuple],
                          warnings: list[str]) -> str:
@@ -441,6 +615,9 @@ def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
         L.append("OK: sem divergências (rel>=0, fim> início, dentro da duração).")
     else:
         L += [f"AVISO: {x}" for x in warnings]
+
+    # Adiciona investigação de deslocamento no final
+    L += ["", _timestamp_investigation(clip_start, clip_end, words, cues)]
     return "\n".join(L) + "\n"
 
 
