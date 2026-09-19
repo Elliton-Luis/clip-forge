@@ -119,8 +119,8 @@ class TestWordEnergy(unittest.TestCase):
     def test_word_energy_flags_silence(self):
         import core.acoustic as ac
         from unittest.mock import patch
-        # 2s: silêncio + tom 0.5
-        samples = [0.0] * 32000 + [0.5] * 32000
+        # 2s: 1s silêncio + 1s tom 0.5 (@16kHz)
+        samples = [0.0] * 16000 + [0.5] * 16000
         words = [Word(" oi", 0.0, 1.0), Word(" fala", 1.0, 2.0)]
         with patch.object(ac, "decode_pcm", return_value=samples):
             out = ac.word_energy("x.mp4", words)
