@@ -130,6 +130,22 @@ class TestASS(unittest.TestCase):
         self.assertIn("PlayResX: 1080", ass)
         self.assertIn("PlayResY: 1920", ass)
 
+    def test_event_cue_yellow_normal_cue_plain(self):
+        words = [W(" fala", 10.0, 11.0)]
+        ass = build_ass(words, 0.0, 30.0, 1080, 1920,
+                        event_cues=[(20.0, 21.0, "*ÁUDIO ESTOURADO")])
+        self.assertIn(CAPTION_HIGHLIGHT_OPEN + "*ÁUDIO ESTOURADO", ass)
+        fala = [l for l in ass.splitlines() if l.rstrip().endswith("FALA")]
+        self.assertTrue(fala)
+        self.assertNotIn(CAPTION_HIGHLIGHT_OPEN, fala[0])
+
+    def test_event_cue_plain_in_srt(self):
+        words = [W(" fala", 10.0, 11.0)]
+        srt = build_srt(words, 0.0, 30.0,
+                        event_cues=[(20.0, 21.0, "*ÁUDIO ESTOURADO")])
+        self.assertIn("*ÁUDIO ESTOURADO", srt)
+        self.assertNotIn(CAPTION_HIGHLIGHT_OPEN, srt)  # SRT não tem cor
+
     def test_same_timing_as_srt(self):
         a = parse_ass(build_ass(self.words, 10.0, 20.0, 1080, 1920))
 

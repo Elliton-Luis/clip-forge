@@ -604,11 +604,18 @@ def build_ass(words: list, clip_start: float, clip_end: float,
         text = r"{\fad(150,150)}" + text
         lines.append(f"Dialogue: 0,{_ass_time(HOOK_START_SEC)},{_ass_time(HOOK_END_SEC)},"
                      f"Hook,,0,0,0,,{text}")
+    # Eventos acústicos (*ÁUDIO ESTOURADO*...) saem em amarelo — mesmo destaque
+    # do título, como ênfase de humor. Identidade pelo texto (constantes de
+    # core/acoustic.py, ex: "*ÁUDIO ESTOURADO"); SRT não tem cor, segue texto
+    # puro. Timestamps e lanes: inalterados.
+    event_texts = {t for _, _, t in (event_cues or [])}
     for cs, ce, text in cues:
         parts = []
         for line in text.split("\n"):
             parts.append(_apply_highlight(line, highlight))
         text = r"\N".join(parts)
+        if text in event_texts:
+            text = f"{CAPTION_HIGHLIGHT_OPEN}{text}{CAPTION_HIGHLIGHT_CLOSE}"
         if animate:
             text = CAPTION_POP_OPEN + text
         lines.append(f"Dialogue: 0,{_ass_time(cs)},{_ass_time(ce)},Clip,,0,0,0,,{text}")
