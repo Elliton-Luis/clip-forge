@@ -33,6 +33,7 @@ def full_cfg(**over):
         "examples": "examples.json", "transcribe_backend": "vulkan",
         "debug_captions": True, "review_transcript": False,
         "review_titles": False, "work_dir": None, "custom_words": None,
+        "acoustic_captions": False,
     }
     cfg.update(over)
     return cfg

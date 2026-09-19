@@ -252,6 +252,34 @@ def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
     return [(s, e, raw) for s, e, raw, _ in out]
 
 
+def merge_event_cues(word_cues: list[tuple], event_cues: list[tuple]) -> list[tuple]:
+    """Funde cues de eventos acústicos às cues de palavras. Puro e testável.
+
+    Regra determinística: palavra sempre vence — a cue de evento é cortada
+    onde cobre span de word cue (pode virar 0, 1 ou 2 pedaços; pedaço vazio
+    morre). Saída ordenada por início, sem overlaps.
+    """
+    spans = sorted((s, e) for s, e, _ in word_cues)
+    out = list(word_cues)
+    for s, e, text in sorted(event_cues):
+        pieces = [(s, e)]
+        for ws, we in spans:
+            nxt = []
+            for ps, pe in pieces:
+                if we <= ps or ws >= pe:
+                    nxt.append((ps, pe))
+                    continue
+                if ws > ps:
+                    nxt.append((ps, ws))
+                if we < pe:
+                    nxt.append((we, pe))
+            pieces = nxt
+        for ps, pe in pieces:
+            if pe > ps:
+                out.append((ps, pe, text))
+    return sorted(out, key=lambda c: (c[0], c[1]))
+
+
 def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[tuple]:
     """Divide cues longas em (cs_rel, ce_rel, texto) já relativos e clampados.
 
@@ -286,7 +314,8 @@ def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[
     return out
 
 
-def build_srt(words: list, clip_start: float, clip_end: float | None = None) -> str:
+def build_srt(words: list, clip_start: float, clip_end: float | None = None,
+              event_cues: list[tuple] | None = None) -> str:
     """Gera SRT com tempos RELATIVOS ao corte (clip_start → 0).
 
     Garantias determinísticas:
@@ -294,15 +323,20 @@ def build_srt(words: list, clip_start: float, clip_end: float | None = None) -> 
     - cues são clampadas em [0, duration] (nunca negativas, nunca além do fim);
     - cues vazias (sem texto após limpeza) são descartadas;
     - tokens especiais ([eot], [sot], ...) nunca viram texto visível.
+    - event_cues (cues absolutas de core.acoustic, opt-in): fundidas com
+      merge_event_cues — palavra sempre vence; None = comportamento idêntico.
     """
-    if not words:
+    if not words and not event_cues:
         return ""
     if clip_end is None:
-        clip_end = max((w.end for w in words), default=clip_start)
+        clip_end = max([w.end for w in words] + [e for _, e, _ in (event_cues or [])],
+                       default=clip_start)
     duration = max(0.0, clip_end - clip_start)
     if duration <= 0:
         return ""
-    cues = _split_lines(_group_cues(words, clip_start, clip_end), clip_start, duration)
+    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end),
+                                         event_cues or []),
+                        clip_start, duration)
     out = [f"{i}\n{_srt_time(cs)} --> {_srt_time(ce)}\n{text}\n"
            for i, (cs, ce, text) in enumerate(cues, start=1)]
     return "\n".join(out)
@@ -469,7 +503,8 @@ def _apply_highlight(line: str, highlight: set | None) -> str:
 def build_ass(words: list, clip_start: float, clip_end: float,
               width: int, height: int, font_size: int = CAPTION_FONT_SIZE_VERTICAL,
               highlight: set | None = None, animate: bool = True,
-              hook_title: str | None = None) -> str:
+              hook_title: str | None = None,
+              event_cues: list[tuple] | None = None) -> str:
     """Gera ASS com PlayRes = dimensões REAIS de saída.
 
     Motivo: sem PlayRes explícito o libass assume 384x288 e escala o estilo
@@ -482,8 +517,9 @@ def build_ass(words: list, clip_start: float, clip_end: float,
     depois); vazio = sem hook (nunca usa filename fallback).
     """
     duration = max(0.0, clip_end - clip_start)
-    cues = _split_lines(_group_cues(words, clip_start, clip_end), clip_start, duration) \
-        if duration > 0 else []
+    cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end),
+                                         event_cues or []),
+                        clip_start, duration) if duration > 0 else []
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -672,6 +708,15 @@ def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
     for w in dropped:
         L += [f'DROPPED DEGENERATE WORD: text={w.text.strip()!r} '
               f'start={w.start:.3f} end={w.end:.3f} reason=end <= start']
+    outside = [w for w in sorted(words, key=lambda x: x.start)
+               if not is_degenerate_word(w) and (w.text or "").strip()
+               and not (w.end > clip_start and w.start < clip_end)]
+    L += ["", f"WORDS VÁLIDAS FORA DO CLIP (não é erro do Whisper): {len(outside)}"]
+    for w in outside[:20]:
+        L += [f'DROPPED OUTSIDE CLIP: text={w.text.strip()!r} '
+              f'start={w.start:.3f} end={w.end:.3f} reason=outside_selected_clip']
+    if len(outside) > 20:
+        L += [f"... e mais {len(outside) - 20}"]
     L += ["", "AUDITORIA WORD→CUE (absoluto | relativo ao clip | duração)"]
     groups = _group_cue_words(words, clip_start, clip_end)
     abs_cues = _group_cues(words, clip_start, clip_end)
@@ -712,7 +757,9 @@ def write_human_transcript(segments: list, path) -> None:
     Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
-def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str) -> None:
+def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
+                      event_cues: list[tuple] | None = None,
+                      acoustic_events: list | None = None) -> None:
     """Artefatos de --debug-captions em debug/<clip>/ (só nesse modo)."""
     d = Path(debug_dir) / Path(out_path).stem
     d.mkdir(parents=True, exist_ok=True)
@@ -720,15 +767,21 @@ def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str) -> N
     (d / f"captions{ext}").write_text(subs, encoding="utf-8")
     if suffix == ".ass":
         (d / "captions.srt").write_text(
-            build_srt(c.words, c.start, c.end), encoding="utf-8")
+            build_srt(c.words, c.start, c.end, event_cues=event_cues), encoding="utf-8")
     words = sorted(c.words, key=lambda w: w.start)
     (d / "transcript-words.json").write_text(
         json.dumps(
             [{"text": w.text, "start": w.start, "end": w.end} for w in words],
             ensure_ascii=False, indent=2), encoding="utf-8")
+    if acoustic_events:
+        (d / "acoustic-events.json").write_text(
+            json.dumps([{"type": e.type, "start": e.start, "end": e.end,
+                         "confidence": e.confidence} for e in acoustic_events],
+                       ensure_ascii=False, indent=2), encoding="utf-8")
     duration = max(0.0, c.end - c.start)
-    cues = _split_lines(_group_cues(c.words, c.start, c.end), c.start, duration) \
-        if duration > 0 else []
+    cues = _split_lines(merge_event_cues(_group_cues(c.words, c.start, c.end),
+                                         event_cues or []),
+                        c.start, duration) if duration > 0 else []
     warns = validate_cues(c.words, c.start, c.end, cues)
     (d / "caption-debug.txt").write_text(
         render_caption_debug(Path(out_path).stem, c.start, c.end,
@@ -746,7 +799,8 @@ def _video_encoder() -> tuple[str, list[str]]:
 
 
 def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions: bool,
-        debug_dir: Path | str | None = None) -> None:
+        debug_dir: Path | str | None = None,
+        acoustic_events: list | None = None) -> None:
     duration = c.duration
     filters: list[str] = []
 
@@ -793,7 +847,10 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
 
     srt_file: str | None = None
     try:
-        if captions and c.words:
+        if captions and (c.words or acoustic_events):
+            # Eventos acústicos (opt-in): cues absolutas fundidas; palavra vence.
+            from .acoustic import event_cues as _event_cues
+            ev_cues = _event_cues(acoustic_events or [], c.start, c.end)
             # ASS com PlayRes = frame real → layout determinístico em pixels.
             # Sem dimensões conhecidas, cai no SRT legado (comportamento anterior).
             # Destaque: palavras do título (determinístico, sem LLM).
@@ -801,10 +858,11 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
             if out_w and out_h:
                 # Hook = título do scoring (sem LLM extra); vazio = sem hook.
                 subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size,
-                                 highlight=hl, hook_title=c.title or None)
+                                 highlight=hl, hook_title=c.title or None,
+                                 event_cues=ev_cues or None)
                 suffix = ".ass"
             else:
-                subs = build_srt(c.words, c.start, c.end)
+                subs = build_srt(c.words, c.start, c.end, event_cues=ev_cues or None)
                 suffix = ".srt"
             if subs:
                 f = tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8")
@@ -820,7 +878,9 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                         "PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2,MarginV=120'"
                     )
                 if debug_dir is not None:
-                    _write_clip_debug(debug_dir, out_path, c, subs, suffix)
+                    _write_clip_debug(debug_dir, out_path, c, subs, suffix,
+                                      event_cues=ev_cues or None,
+                                      acoustic_events=acoustic_events or None)
         vf = ",".join(filters)
         vcodec, vextra = _video_encoder()
         # QSV sem flag -hwaccel (sonda mostrou que -hwaccel qsv quebra o init

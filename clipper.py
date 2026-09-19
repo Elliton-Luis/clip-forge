@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=DEFAULT_MODEL, help=f"Modelo NIM (padrão: {DEFAULT_MODEL})")
     p.add_argument("--no-vertical", action="store_true", help="Não recortar para 9:16")
     p.add_argument("--no-captions", action="store_true", help="Não queimar legendas")
+    p.add_argument("--acoustic-captions", action="store_true",
+                   help="Queima *ÁUDIO ESTOURADO* nos trechos com clipping (experimental, off)")
     p.add_argument("--cache-dir", default=None, help="Diretório de cache (ex: .cache/clipper)")
     p.add_argument("--force-retranscribe", action="store_true", help="Ignora cache transcrição")
     p.add_argument("--force-rescore", action="store_true", help="Ignora cache scores")
@@ -97,6 +99,7 @@ def parse_cli(argv=None):
 
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
+    "acoustic_captions",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
@@ -122,6 +125,7 @@ def config_from_args(args) -> dict:
         "model": args.model,
         "no_vertical": bool(args.no_vertical),
         "no_captions": bool(args.no_captions),
+        "acoustic_captions": bool(args.acoustic_captions),
         "cache_dir": args.cache_dir,
         "force_retranscribe": bool(args.force_retranscribe),
         "force_rescore": bool(args.force_rescore),
@@ -170,6 +174,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-vertical")
     if cfg["no_captions"]:
         parts.append("--no-captions")
+    if cfg.get("acoustic_captions"):
+        parts.append("--acoustic-captions")
     if cfg["cache_dir"]:
         parts += ["--cache-dir", cfg["cache_dir"]]
     if cfg["force_retranscribe"]:
@@ -465,8 +471,14 @@ def run_pipeline(cfg: dict) -> None:
                 # destruído. Nunca escreva por cima da entrada.
                 if out.resolve() == Path(video).resolve():
                     raise RuntimeError(f"saída coincide com a entrada ({out}) — clipe ignorado")
+                events = None
+                if cfg.get("acoustic_captions"):
+                    from core import acoustic as _ac
+                    events, _stats = _ac.detect_clipping(video, c.start, c.duration)
+                    if events:
+                        print(f"   -> clipe {i}: {len(events)} trecho(s) estourado(s)")
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
-                         debug_dir=debug_dir)
+                         debug_dir=debug_dir, acoustic_events=events)
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")
                 clips_failed += 1
@@ -481,6 +493,8 @@ def run_pipeline(cfg: dict) -> None:
                 "speech_rate": c.speech_rate, "title": c.title, "hashtags": c.hashtags, "reason": c.reason,
                 "title_warnings": warn.get(i, {}).get("title", []),
                 "highlight_warnings": warn.get(i, {}).get("highlight", []),
+                "acoustic_events": [{"type": e.type, "start": e.start, "end": e.end,
+                                     "confidence": e.confidence} for e in (events or [])],
             })
         cut_time = round(time.time() - t_cut, 3)
         metrics.stages["cutting"] = cut_time
