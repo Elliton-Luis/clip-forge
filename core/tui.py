@@ -488,8 +488,8 @@ class TUI:
 
     def menu(self):
         items = ["Processar vídeo", "Revisar transcrição", "Aprovar transcrição",
-                 "Finalizar sessão", "Ver último relatório",
-                 "Última transcrição", "Sair"]
+                 "Finalizar sessão", "Limpar caches",
+                 "Ver último relatório", "Última transcrição", "Sair"]
         pos = 0
         while True:
             s = self.stdscr
@@ -584,6 +584,37 @@ class TUI:
         s.addstr(4, 2, "Pressione qualquer tecla...")
         s.refresh()
         s.getch()
+
+    def reset_flow(self):
+        from core import reset as _reset
+        s = self.stdscr
+        todo = _reset.targets(".")
+        logs = _reset.targets(".", include_logs=True)
+        only_logs = [p for p in logs if p not in todo]
+        s.clear()
+        h, w = s.getmaxyx()
+        s.addstr(0, 2, "LIMPAR CACHES (vídeos, modelos, cortes e .env preservados)",
+                 curses.A_BOLD)
+        row = 2
+        for p in todo[: h - 8]:
+            kb = _reset.dir_size(p) / 1024
+            s.addstr(row, 4, f"{str(p)}/ ({kb:.0f} KB)"[:w - 6])
+            row += 1
+        if only_logs:
+            kb = sum(_reset.dir_size(p) for p in only_logs) / 1024
+            s.addstr(row, 4, f"+ logs metrics/ ({kb:.0f} KB, só com [T])"[:w - 6])
+            row += 1
+        s.addstr(h - 2, 2, "[C]aches · [T]udo com logs · outra tecla cancela"[:w - 4])
+        s.refresh()
+        ch = s.getch()
+        if ch in (ord("t"), ord("T")):
+            final = logs
+        elif ch in (ord("c"), ord("C")):
+            final = todo
+        else:
+            return
+        removed, freed = _reset.wipe(final)
+        self.notice(f"ZERADO: {removed} item(ns), {freed / 1024:.0f} KB liberados.")
 
     def edit_external(self, path: Path):
         """Abre $EDITOR fora do modo curses e volta. Sem editor próprio.
@@ -705,6 +736,9 @@ def _curses_main(stdscr, cfg: dict, models: list[dict]):
             continue
         if choice == "Finalizar sessão":
             tui.finalize_flow()
+            continue
+        if choice == "Limpar caches":
+            tui.reset_flow()
             continue
         # Processar vídeo
         while True:

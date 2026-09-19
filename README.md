@@ -348,6 +348,12 @@ invalida sozinho; mudar a semântica da transcrição (`TRANSCRIPT_PIPELINE_VERS
 invalida transcripts antigos (era VAD nunca volta por cache).
 `--force-retranscribe` / `--force-rescore` refazem cada camada.
 
+Zerar tudo de uma vez: `python clipper.py reset` (mostra o que vai, pede
+confirmação) apaga `.cache/`, `work/`, `debug/` e temporários; `--logs`
+inclui os relatórios `metrics/*.json`; `--yes` pula a confirmação. Nunca
+toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
+**Limpar caches** (`[C]`aches ou `[T]`udo com logs).
+
 ## CLI completa
 
 | Flag | Efeito | Padrão |

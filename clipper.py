@@ -600,9 +600,36 @@ def main() -> None:
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
     if len(sys.argv) > 1 and sys.argv[1] in (
             "transcribe-lab", "lab-compare", "transcribe-approve", "finalize",
-            "caption-lab"):
+            "caption-lab", "reset"):
         from core import translab as _lab
         import argparse as _ap
+        if sys.argv[1] == "reset":
+            from core import reset as _reset
+            from pathlib import Path as _P
+            q = _ap.ArgumentParser(
+                description="Zera caches e intermediários (.cache, work, debug; "
+                            "--logs inclui os relatórios metrics/*.json). "
+                            "Nunca toca vídeos, modelos, cortes, código ou .env.")
+            q.add_argument("--logs", action="store_true",
+                           help="Apaga também os logs de execução (metrics/*.json)")
+            q.add_argument("--yes", action="store_true",
+                           help="Pula a confirmação (cuidado: apaga de verdade)")
+            a = q.parse_args(sys.argv[2:])
+            todo = _reset.targets(_P("."), include_logs=a.logs)
+            if not todo:
+                print("Nada a limpar (sem caches/intermediários).")
+                return
+            total = sum(_reset.dir_size(p) for p in todo)
+            print("Será apagado:")
+            for p in todo:
+                print(f"  {p}/ ({_reset.dir_size(p) / 1024:.0f} KB)")
+            print(f"Total: {total / 1024:.0f} KB. Finais em cortes/, vídeos, "
+                  f"modelos e .env preservados.")
+            if not a.yes and not _ask_confirm("Confirmar limpeza? [Y/N] "):
+                sys.exit("Limpeza cancelada.")
+            removed, freed = _reset.wipe(todo)
+            print(f"ZERADO: {removed} item(ns), {freed / 1024:.0f} KB liberados.")
+            return
         if sys.argv[1] == "caption-lab":
             from core import captionlab as _cl
             q = _ap.ArgumentParser(
