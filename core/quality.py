@@ -5,14 +5,16 @@ NÃO mede tempo, NÃO reescreve timestamp, NÃO decide default — só sinaliza.
 Assinaturas (calibradas em material real, 2026-09):
 - token único repetido em sequência >= 10 ("♪" x17, "plataforma" em loop).
   Fala real ("dá, dá, dá, dá" = 4) passa longe do limiar.
-- n-grama de >= 4 palavras ocorrendo >= 3 vezes ("toda a plataforma" x5).
+- n-grama de >= 3 palavras ocorrendo >= 3 vezes ("toda a plataforma" x3 em
+  chunk real ruidoso). Falso-positivo custa só 1 re-decodificação (o original
+  é mantido salvo se o retry limpar a sinalização).
 
 Saída: {"flagged": bool, "reason": str, "detail": str}. Conservador por
 desenho: prefere falso-negativo a acusar fala real enfática.
 """
 
 SINGLE_RUN_MIN = 10
-NGRAM_MIN_N = 4
+NGRAM_MIN_N = 3
 NGRAM_MIN_COUNT = 3
 
 

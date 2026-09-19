@@ -16,6 +16,12 @@ class TestDetector(unittest.TestCase):
         self.assertTrue(r["flagged"])
         self.assertEqual(r["reason"], "repeated_ngram")
 
+    def test_real_noisy_chunk_flagged(self):
+        # Texto real do chunk 30-60 de videofull (medium): loop curto x3.
+        r = check("e óleo de céu por toda a plataforma toda a plataforma "
+                  "toda a plataforma você...")
+        self.assertTrue(r["flagged"])
+
     def test_music_notes_flagged(self):
         r = check(" ".join(["♪"] * 17))
         self.assertTrue(r["flagged"])
