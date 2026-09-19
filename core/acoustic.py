@@ -104,6 +104,46 @@ def signal_stats(samples: list[float]) -> dict:
             "saturated_ratio": round(sat / len(samples), 4)}
 
 
+# Piso de silêncio calibrado (videofull/teste_audio, 2026-09): silêncio real
+# fica em rms ~0.01; fala típica >= 0.05. Word com rms abaixo disso num span
+# válido é SUSPEITA (gap do Whisper ou palavra fantasma) — só diagnóstico.
+SILENCE_RMS = 0.015
+
+
+def rms_between(samples: list[float], start: float, end: float) -> float:
+    """RMS no intervalo [start, end) em segundos. Puro e testável."""
+    s0 = max(0, int(start * SAMPLE_RATE))
+    s1 = min(len(samples), int(end * SAMPLE_RATE))
+    if s1 <= s0:
+        return 0.0
+    seg = samples[s0:s1]
+    return (sum(x * x for x in seg) / len(seg)) ** 0.5
+
+
+def word_energy(video_path: str, words: list) -> list[dict]:
+    """Cada word válida → {text, start, end, rms, silent}. Um decode só.
+
+    Diagnóstico: nunca desloca timestamp, nunca filtra. Falha de decode
+    retorna lista vazia (debug segue sem a seção).
+    """
+    valid = [w for w in words if (w.end > w.start) and (w.text or "").strip()]
+    if not valid:
+        return []
+    t0 = min(w.start for w in valid)
+    t1 = max(w.end for w in valid)
+    try:
+        samples = decode_pcm(video_path, t0, t1 - t0)
+    except RuntimeError:
+        return []
+    out = []
+    for w in valid:
+        rms = rms_between(samples, w.start - t0, w.end - t0)
+        out.append({"text": w.text.strip(), "start": round(w.start, 3),
+                    "end": round(w.end, 3), "rms": round(rms, 4),
+                    "silent": rms < SILENCE_RMS})
+    return out
+
+
 def detect_clipping(video_path: str, start: float, dur: float,
                     offset: float | None = None) -> tuple[list[AcousticEvent], dict]:
     """Pipeline completo: decode → flags → eventos + estatísticas."""

@@ -700,8 +700,12 @@ def _timestamp_investigation(clip_start: float, clip_end: float,
 
 def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
                          words: list, cues: list[tuple],
-                         warnings: list[str]) -> str:
-    """Texto do caption-debug.txt (§2 do diagnóstico): ABS → REL → CAP."""
+                         warnings: list[str], video_path: str | None = None) -> str:
+    """Texto do caption-debug.txt (§2 do diagnóstico): ABS → REL → CAP.
+
+    video_path (opcional): adiciona seção ENERGIA POR WORD — diagnóstico
+    report-only (rms do áudio no span de cada word; nunca desloca nada).
+    """
     L = [f"CAPTION DEBUG — {clip_name}",
          f"Clip: {_fmt_ts(clip_start)} → {_fmt_ts(clip_end)}",
          "", "TRANSCRIÇÃO ORIGINAL [ABS]"]
@@ -758,6 +762,26 @@ def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
     else:
         L += [f"AVISO: {x}" for x in warnings]
 
+    if video_path is not None:
+        # Dupla validação (diagnóstico): a word afirma fala no seu span; o
+        # áudio confirma energia. Divergência = Whisper errou a medição.
+        # Report-only: nenhum timestamp é tocado por esta seção.
+        try:
+            from .acoustic import word_energy as _word_energy
+            levels = _word_energy(video_path, [w for w in words
+                                               if w.end > clip_start and w.start < clip_end])
+        except Exception as e:
+            levels = []
+            L += ["", f"ENERGIA POR WORD: indisponível ({e})"]
+        if levels:
+            silent = sum(1 for e in levels if e["silent"])
+            L += ["", f"ENERGIA POR WORD (rms no span; silent < 0.015): "
+                      f"{len(levels)} words, {silent} em silêncio"]
+            for e in levels:
+                flag = " SILÊNCIO?" if e["silent"] else ""
+                L.append(f'  {e["text"]!r:14} {e["start"]:.3f}→{e["end"]:.3f} '
+                         f'rms={e["rms"]:.4f}{flag}')
+
     # Adiciona investigação de deslocamento no final
     L += ["", _timestamp_investigation(clip_start, clip_end, words, cues)]
     return "\n".join(L) + "\n"
@@ -775,7 +799,8 @@ def write_human_transcript(segments: list, path) -> None:
 
 def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
                       event_cues: list[tuple] | None = None,
-                      acoustic_events: list | None = None) -> None:
+                      acoustic_events: list | None = None,
+                      video_path: str | None = None) -> None:
     """Artefatos de --debug-captions em debug/<clip>/ (só nesse modo)."""
     d = Path(debug_dir) / Path(out_path).stem
     d.mkdir(parents=True, exist_ok=True)
@@ -801,7 +826,8 @@ def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
     warns = validate_cues(c.words, c.start, c.end, cues)
     (d / "caption-debug.txt").write_text(
         render_caption_debug(Path(out_path).stem, c.start, c.end,
-                             c.words, cues, warns), encoding="utf-8")
+                             c.words, cues, warns,
+                             video_path=video_path), encoding="utf-8")
     for w in warns:
         print(f"   ! legenda [{Path(out_path).stem}]: {w}")
 
@@ -896,7 +922,8 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
                 if debug_dir is not None:
                     _write_clip_debug(debug_dir, out_path, c, subs, suffix,
                                       event_cues=ev_cues or None,
-                                      acoustic_events=acoustic_events or None)
+                                      acoustic_events=acoustic_events or None,
+                                      video_path=video_path)
         vf = ",".join(filters)
         vcodec, vextra = _video_encoder()
         # QSV sem flag -hwaccel (sonda mostrou que -hwaccel qsv quebra o init

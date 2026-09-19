@@ -108,5 +108,33 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestWordEnergy(unittest.TestCase):
+    def test_rms_between(self):
+        from core.acoustic import rms_between, SAMPLE_RATE
+        samples = [0.0] * SAMPLE_RATE + [0.5] * SAMPLE_RATE  # 1s silêncio + 1s tom
+        self.assertAlmostEqual(rms_between(samples, 0.0, 1.0), 0.0)
+        self.assertAlmostEqual(rms_between(samples, 1.0, 2.0), 0.5)
+        self.assertEqual(rms_between(samples, 5.0, 4.0), 0.0)  # intervalo inválido
+
+    def test_word_energy_flags_silence(self):
+        import core.acoustic as ac
+        from unittest.mock import patch
+        # 2s: silêncio + tom 0.5
+        samples = [0.0] * 32000 + [0.5] * 32000
+        words = [Word(" oi", 0.0, 1.0), Word(" fala", 1.0, 2.0)]
+        with patch.object(ac, "decode_pcm", return_value=samples):
+            out = ac.word_energy("x.mp4", words)
+        self.assertEqual(len(out), 2)
+        self.assertTrue(out[0]["silent"])   # word afirma fala no silêncio
+        self.assertFalse(out[1]["silent"])
+        self.assertEqual(out[1]["text"], "fala")
+
+    def test_word_energy_decode_failure_returns_empty(self):
+        import core.acoustic as ac
+        from unittest.mock import patch
+        with patch.object(ac, "decode_pcm", side_effect=RuntimeError("ffmpeg")):
+            self.assertEqual(ac.word_energy("x.mp4", [Word("a", 0.0, 1.0)]), [])
+
+
 if __name__ == "__main__":
     unittest.main()
