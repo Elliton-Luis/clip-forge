@@ -30,6 +30,10 @@ Responda SOMENTE com um JSON válido (sem markdown, sem texto antes ou depois), 
 Regras obrigatórias:
 - A nota "score" vai de 0 a 10.
 - "title" deve ter no máximo 50 caracteres, sem emoji.
+- O "title" é um recorte do transcript: use SOMENTE palavras, pessoas, fatos e
+  acontecimentos presentes no texto transcrito. Nunca adicione informação nova
+  (ex.: se o transcript não menciona um grupo, característica ou evento, o
+  título não pode mencioná-los). Na dúvida entre chamativo e fiel, escolha fiel.
 - "hashtags" deve conter exatamente 3 hashtags em minúsculas.
 - Avalie TODOS os clipes recebidos, na ordem, usando o "id" fornecido.
 - Use também a duração, energia de áudio (alta/media/baixa) e speech_rate como pistas: energia alta + fala rápida costuma indicar hype/grito.

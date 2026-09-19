@@ -143,6 +143,12 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         rows.append(("Forçar", "novo scoring"))
     if cfg.get("debug_captions"):
         rows.append(("Debug", "legendas em debug/"))
+    if cfg.get("review_transcript"):
+        rows.append(("Revisão", "transcrição (pausa p/ editar)"))
+    if cfg.get("review_titles"):
+        rows.append(("Revisão", "títulos (pausa p/ editar)"))
+    if cfg.get("work_dir"):
+        rows.append(("Sessão", str(cfg["work_dir"])))
     return rows
 
 
@@ -214,6 +220,10 @@ class TUI:
             ("force_retranscribe", "Forçar retranscrição", "bool"),
             ("force_rescore", "Forçar novo scoring", "bool"),
             ("debug_captions", "Debug de legendas (avançado)", "bool"),
+            ("review_transcript", "Revisar transcrição (pausa p/ editar)", "bool"),
+            ("review_titles", "Revisar títulos (pausa p/ editar)", "bool"),
+            ("work_dir", "Sessão de revisão (work/..., avançado)", "text"),
+            ("custom_words", "Vocabulário customizado (JSON, avançado)", "text"),
             ("process", "[ PROCESSAR ]", "action"),
         ]
 
@@ -249,6 +259,10 @@ class TUI:
             self.cfg["force_rescore"] = not self.cfg.get("force_rescore", False)
         elif key == "debug_captions":
             self.cfg["debug_captions"] = not self.cfg.get("debug_captions", False)
+        elif key == "review_transcript":
+            self.cfg["review_transcript"] = not self.cfg.get("review_transcript", False)
+        elif key == "review_titles":
+            self.cfg["review_titles"] = not self.cfg.get("review_titles", False)
 
     def _sync_from_widgets(self):
         # Semântica positiva da tela → flags negativas da CLI, sem inversão.

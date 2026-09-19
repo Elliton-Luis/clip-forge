@@ -30,7 +30,8 @@ def full_cfg(**over):
         "force_rescore": False, "pad": 1.2, "no_audio_features": True,
         "min_score": 5.0, "max_per_10min": 1, "context": "ranked",
         "examples": "examples.json", "transcribe_backend": "vulkan",
-        "debug_captions": True,
+        "debug_captions": True, "review_transcript": False,
+        "review_titles": False, "work_dir": None, "custom_words": None,
     }
     cfg.update(over)
     return cfg

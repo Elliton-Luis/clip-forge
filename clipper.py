@@ -10,6 +10,7 @@ Mantém compatibilidade: `python clipper.py video.mp4 --out cortes/`
 """
 import argparse
 import json
+import re
 import shlex
 import sys
 import time
@@ -71,6 +72,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "'gpu' exige GPU e falha claramente se indisponível)")
     p.add_argument("--debug-captions", action="store_true",
                    help="Diagnóstico de legendas: preserva ASS/SRT/transcript/diagnóstico em debug/")
+    p.add_argument("--review-transcript", action="store_true",
+                   help="Pausa após transcrever p/ revisão humana (edita work/<video>/transcription/words.txt, aprova, continua sem re-rodar Whisper)")
+    p.add_argument("--review-titles", action="store_true",
+                   help="Pausa após scoring p/ revisar títulos (work/<video>/titles.txt, validados contra a transcrição)")
+    p.add_argument("--work-dir", default=None,
+                   help="Sessão de revisão (work/<video>): usa a transcrição APROVADA e pula o Whisper (regeneração)")
+    p.add_argument("--custom-words", default=None,
+                   help="JSON de vocabulário ({\"words\": [...]}) aplicado como correção exata pós-transcrição")
     return p
 
 
@@ -87,6 +96,7 @@ CONFIG_FIELDS = (
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
+    "review_transcript", "review_titles", "work_dir", "custom_words",
 )
 
 
@@ -118,6 +128,10 @@ def config_from_args(args) -> dict:
         "examples": args.examples,
         "transcribe_backend": args.transcribe_backend,
         "debug_captions": bool(args.debug_captions),
+        "review_transcript": bool(args.review_transcript),
+        "review_titles": bool(args.review_titles),
+        "work_dir": args.work_dir,
+        "custom_words": args.custom_words,
     }
 
 
@@ -169,7 +183,101 @@ def cli_command(cfg: dict) -> str:
         parts += ["--transcribe-backend", cfg["transcribe_backend"]]
     if cfg.get("debug_captions"):
         parts.append("--debug-captions")
+    if cfg.get("review_transcript"):
+        parts.append("--review-transcript")
+    if cfg.get("review_titles"):
+        parts.append("--review-titles")
+    if cfg.get("work_dir"):
+        parts += ["--work-dir", cfg["work_dir"]]
+    if cfg.get("custom_words"):
+        parts += ["--custom-words", cfg["custom_words"]]
     return " ".join(shlex.quote(x) for x in parts)
+
+
+# ----------------------------------------------------------------------------
+# 3b. Revisão humana (transcrição aprovada = fonte da verdade)
+# ----------------------------------------------------------------------------
+
+def _pause(msg: str) -> None:
+    """Pausa interativa. EOF (não-interativo) = aborta, nunca aprova cego."""
+    try:
+        input(msg)
+    except EOFError:
+        sys.exit("Entrada não-interativa: revisão humana exige terminal. "
+                 "Edite os arquivos em work/ e use transcribe-approve.")
+
+
+def _session_for(cfg: dict, video: str) -> Path:
+    from core import review as _rev
+    if cfg.get("work_dir"):
+        d = Path(cfg["work_dir"]) / "transcription"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return _rev.session_dir(video)
+
+
+def _pause_for_transcript_review(cfg: dict, video: str, segments: list) -> list:
+    """Dump → edição externa → validação → aprovação. Retorna segments finais."""
+    from core import review as _rev
+    session = _session_for(cfg, video)
+    mapping = _rev.load_custom_words(cfg.get("custom_words"))
+    if mapping:
+        n = _rev.apply_custom_words(segments, mapping)
+        print(f"   -> custom_words: {n} correções exatas de {cfg['custom_words']}")
+    _rev.save_transcript(segments, session / "transcript.json", status=_rev.DRAFT)
+    words_txt = session / "words.txt"
+    _rev.dump_words_txt(segments, words_txt)
+    print(f"\n[REVISÃO] Transcrição em: {words_txt.resolve()}")
+    print("   Edite o TEXTO (timestamps preservados por linha), salve e volte.")
+    _pause("   Pressione Enter quando terminar de editar (Ctrl+C cancela)...")
+    edited = _rev.parse_words_txt(words_txt)
+    final = _rev.approve(session, edited)
+    print(f"   -> TRANSCRIÇÃO APROVADA ({len(edited)} segmentos): {final.resolve()}")
+    return edited
+
+
+def _pause_for_titles_review(cfg: dict, video: str, segments: list,
+                             selected: list) -> list:
+    """titles.txt → edição → validação grounded. Violações viram warnings."""
+    from core import review as _rev
+    session = _session_for(cfg, video)
+    approved_text = " ".join(s.text for s in segments)
+    titles_txt = session / "titles.txt"
+    lines = ["# Edite o título após '|'. [SEM TITULO] remove; linha vazia mantém.",
+             ""]
+    for i, c in enumerate(selected, start=1):
+        lines.append(f"{i:02d} | {c.title}")
+    titles_txt.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"\n[REVISÃO] Títulos em: {titles_txt.resolve()}")
+    _pause("   Pressione Enter quando terminar de editar (Ctrl+C cancela)...")
+    wanted: dict[int, str] = {}
+    for line in titles_txt.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"\s*(\d+)\s*\|\s?(.*)$", line)
+        if m:
+            wanted[int(m.group(1))] = m.group(2).strip()
+    for i, c in enumerate(selected, start=1):
+        if i not in wanted or not wanted[i]:
+            continue  # linha apagada/vazia = mantém sugestão
+        if wanted[i] == "[SEM TITULO]":
+            c.title = ""
+            continue
+        c.title = wanted[i][:50]
+        bad = _rev.validate_grounding(c.title, approved_text)
+        if bad:
+            print(f"   ! clipe {i}: título com palavras fora da transcrição: {bad}")
+    return selected
+
+
+def _title_warnings(segments: list, selected: list) -> dict[int, dict]:
+    from core import review as _rev
+    approved_text = " ".join(s.text for s in segments)
+    out = {}
+    for i, c in enumerate(selected, start=1):
+        tw = _rev.validate_grounding(c.title or "", approved_text)
+        hw = _rev.validate_highlights(c.title or "", approved_text)
+        if tw or hw:
+            out[i] = {"title": tw, "highlight": hw}
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -202,8 +310,25 @@ def run_pipeline(cfg: dict) -> None:
 
         stage = "transcribe"
         with metrics.stage("transcribe"):
-            segments = transcribe(video, cache_dir=cache_dir, force=cfg["force_retranscribe"],
-                                  backend=cfg["transcribe_backend"], metrics=metrics)
+            if cfg.get("work_dir"):
+                # Regeneração: transcrição APROVADA, Whisper nunca re-executa.
+                from core import review as _rev
+                approved_path = Path(cfg["work_dir"]) / "transcription" / "transcript.json"
+                segments = _rev.require_approved(approved_path)
+                print(f"[1/5] Transcrição aprovada carregada ({len(segments)} segmentos, sem Whisper)")
+                try:
+                    metrics.set_transcription(
+                        model="review", backend_requested=cfg["transcribe_backend"],
+                        backend_used="review", device=None, gpu=None,
+                        time_sec=0.0, segments=len(segments),
+                        fallback=False, tried_backends=["review"], error=None)
+                except Exception:
+                    pass
+            else:
+                segments = transcribe(video, cache_dir=cache_dir, force=cfg["force_retranscribe"],
+                                      backend=cfg["transcribe_backend"], metrics=metrics)
+            if cfg.get("review_transcript") and not cfg.get("work_dir"):
+                segments = _pause_for_transcript_review(cfg, video, segments)
         stage = "candidates"
         with metrics.stage("candidates"):
             candidates = build_candidates(segments)
@@ -230,7 +355,12 @@ def run_pipeline(cfg: dict) -> None:
                                   max_per_10min=cfg["max_per_10min"])
             if not selected:
                 sys.exit("Nenhum clipe passou no corte. Tente --min-score menor.")
+            if cfg.get("review_titles"):
+                selected = _pause_for_titles_review(cfg, video, segments, selected)
         metrics.set_counts(selected=len(selected))
+        warn = _title_warnings(segments, selected)
+        for i, w in warn.items():
+            print(f"   ! clipe {i}: title_warnings={w}")
 
         stage = "cutting"
         print(f"[5/5] Cortando {len(selected)} clipes com ffmpeg...")
@@ -271,6 +401,8 @@ def run_pipeline(cfg: dict) -> None:
                 "original_end": round(c.original_end, 1) if c.snapped else round(c.end, 1),
                 "snapped": c.snapped, "score": c.score, "energy": c.energy,
                 "speech_rate": c.speech_rate, "title": c.title, "hashtags": c.hashtags, "reason": c.reason,
+                "title_warnings": warn.get(i, {}).get("title", []),
+                "highlight_warnings": warn.get(i, {}).get("highlight", []),
             })
         cut_time = round(time.time() - t_cut, 3)
         metrics.stages["cutting"] = cut_time
@@ -338,9 +470,52 @@ def run_pipeline(cfg: dict) -> None:
 def main() -> None:
     # Laboratório A/B de transcrição (sem VAD) — despacha antes do parse
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
-    if len(sys.argv) > 1 and sys.argv[1] in ("transcribe-lab", "lab-compare"):
+    if len(sys.argv) > 1 and sys.argv[1] in (
+            "transcribe-lab", "lab-compare", "transcribe-approve", "finalize"):
         from core import translab as _lab
         import argparse as _ap
+        if sys.argv[1] == "transcribe-approve":
+            q = _ap.ArgumentParser(
+                description="Valida work/<video>/transcription/words.txt editado e aprova.")
+            q.add_argument("session", help="Dir transcription da sessão (work/<video>/transcription)")
+            a = q.parse_args(sys.argv[2:])
+            from core import review as _rev
+            from pathlib import Path as _P
+            session = _P(a.session)
+            edited = _rev.parse_words_txt(session / "words.txt")
+            final = _rev.approve(session, edited)
+            print(f"TRANSCRIÇÃO APROVADA ({len(edited)} segmentos): {final}")
+            return
+        if sys.argv[1] == "finalize":
+            q = _ap.ArgumentParser(
+                description="Finaliza a sessão: preserva vídeo final + transcrição "
+                            "aprovada e remove intermediários (só com confirmação).")
+            q.add_argument("session", help="Dir da sessão (work/<video>)")
+            q.add_argument("--out", required=True, help="Pasta dos clipes finais")
+            q.add_argument("--yes", action="store_true",
+                           help="Pula a confirmação (cuidado: remove intermediários)")
+            a = q.parse_args(sys.argv[2:])
+            from core import review as _rev
+            from pathlib import Path as _P
+            import shutil as _sh
+            session, out = _P(a.session), _P(a.out)
+            approved = session / "transcription" / "transcript.json"
+            _rev.require_approved(approved)  # nunca apaga antes da aprovação final
+            if not a.yes:
+                try:
+                    ans = input(f"Tem certeza que deseja finalizar?\n"
+                                f"Isso removerá os intermediários em {session}.\n"
+                                f"Finais em {out} + cópia da transcrição aprovada serão mantidos.\n[Y/N] ")
+                except EOFError:
+                    sys.exit("Finalização cancelada (sem confirmação).")
+                if ans.strip().lower() not in ("y", "yes", "s", "sim"):
+                    sys.exit("Finalização cancelada.")
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "approved-transcript.json").write_text(
+                approved.read_text(encoding="utf-8"), encoding="utf-8")
+            _sh.rmtree(session, ignore_errors=True)
+            print(f"FINALIZADO: intermediários removidos; finais em {out.resolve()}")
+            return
         if sys.argv[1] == "transcribe-lab":
             q = _ap.ArgumentParser(description="Laboratório A/B de transcrição (sem VAD).")
             q.add_argument("video", help="Vídeo de entrada")
