@@ -172,8 +172,20 @@ por chunk. Modelo: `models/ggml-medium.bin` (~1,5 GB, HuggingFace
 `ggerganov/whisper.cpp`); binário em `thirdparty/whisper.cpp/build/bin`
 (whisper.cpp 1.9.4-dev validado; ambos ignorados no git).
 
+Anti-alucinação: cada chunk passa por detector de repetição (`core/quality.py`:
+token ×10+ ou 3-grama ×3+); chunk sinalizado é re-decodificado 1× com
+`models/ggml-large-v3.bin` (~3 GB, `WHISPER_RETRY_MODEL`, `off` desliga) e o
+retry só vale se limpar a sinalização (senão mantém o original + log).
+Medido 2026-09 em gameplay ruidoso: medium alucinava loop ("toda a
+plataforma", `p` até 1.00, frase real perdida); retry large recuperou a frase
+("Agora eu vou matar... picaretada"). Temperatura (`-tp 0.2`) e `best-of 8`
+não resolveram (máx suportado é 8). Default segue medium: large adiciona
+prefixo alucinado no limpo ("Vamos lá" antes do onset) — maior nem sempre é
+melhor; `WHISPER_MODEL_SIZE=large-v3` troca globalmente se quiser.
+
 Limitações: áudio altamente repetitivo pode alucinar o Whisper (traço do
-modelo); cada chunk recarrega o modelo (segundos); utilização/VRAM ficam
+modelo, agora detectado e retentado); cada chunk recarrega o modelo
+(segundos); utilização/VRAM ficam
 `null` no relatório (`nvidia-smi` não serve p/ Intel, `intel_gpu_top`
 ausente, sysfs do driver `xe` sem contadores — `null` honesto).
 
@@ -194,8 +206,8 @@ python clipper.py lab-compare debug/transcription-lab/experiment-001 \
 
 Eixos: `--audio original|normalize|clean|compressed|denoised|declipped` (só p/ transcrição; o vídeo final
 nunca usa esse áudio), `--mode chunks|global`, `--context S` (só chunks),
-`--whisper-model` (qualquer `ggml-*.bin` em `models/`), `--start/--dur` p/
-recortar o trecho. Cada experimento salva `config.json`, `transcript.json`,
+`--whisper-model` (qualquer `ggml-*.bin` em `models/`), `--temp`/`--best-of`
+(experimentos de decodificação), `--start/--dur` p/ recortar o trecho. Cada experimento salva `config.json`, `transcript.json`,
 `transcript.txt`, `words.txt` (`[MM:SS.mmm → MM:SS.mmm] WORD`) e `metrics.json`
 em `debug/transcription-lab/experiment-NNN/` (ignorado no git); `lab-compare`
 imprime tabela palavra-por-palavra com Δinício/Δfim (nunca média de timestamps).
