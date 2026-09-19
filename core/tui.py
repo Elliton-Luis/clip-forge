@@ -546,17 +546,28 @@ class TUI:
         s.getch()
 
     def edit_external(self, path: Path):
-        """Abre $EDITOR fora do modo curses e volta. Sem editor próprio."""
+        """Abre $EDITOR fora do modo curses e volta. Sem editor próprio.
+
+        Suspende/resume correto: def_prog_mode() salva o modo programa
+        (cbreak/noecho), endwin() devolve o tty ao shell p/ o editor, e
+        reset_prog_mode() restaura — sem isso o Enter/setas voltam lidos
+        com flags errados (^M aparente, navegação quebrada).
+        """
         import shutil
         import subprocess
         editor = os.environ.get("EDITOR") or shutil.which("nano") \
             or shutil.which("vi") or "vi"
+        curses.def_prog_mode()
         curses.endwin()
         try:
             print(f"\nEditando {path} com {editor} (salve e saia p/ voltar)...")
-            subprocess.run([editor, str(path)])
+            r = subprocess.run([editor, str(path)])
+            rc = r.returncode
         finally:
+            curses.reset_prog_mode()
             self.stdscr.refresh()
+        if rc != 0:
+            self.notice(f"Editor saiu com código {rc} — verifique se salvou.")
 
     def review_flow(self):
         from core import review as _rev
