@@ -5,7 +5,9 @@
 - transcribe_vulkan(): Whisper via binário whisper.cpp (build Vulkan).
 
 Cada backend tenta 1x e levanta RuntimeError(motivo) se falhar — o
-orquestrador (transcribe.py) faz o fallback explícito. Sem retry aqui.
+orquestrador (transcribe.py) faz o fallback explícito. Exceção única:
+chunks com loop alucinatório detectado (core/quality) são re-decodificados
+1x com WHISPER_RETRY_MODEL — troca só se limpar a sinalização.
 """
 import json
 import os
@@ -14,7 +16,7 @@ import tempfile
 from pathlib import Path
 from .models import Word, Segment
 from .video import is_special_token as _is_special, clean_caption_text as _clean_text
-from .config import CLIPPER_TRANSCRIBE_AUDIO_FILTER
+from .config import CLIPPER_TRANSCRIBE_AUDIO_FILTER, WHISPER_RETRY_MODEL
 
 CHUNK_SECONDS = 30  # janela nativa do Whisper; 30s a 16kHz mono = ~1MB por chunk
 SAMPLE_RATE = 16000
@@ -152,12 +154,68 @@ def _whisper_cpp_bin() -> str | None:
 
 
 def _whisper_cmd(binary: str, model: Path, wav: Path, stem: Path,
-                 language: str | None) -> list[str]:
+                 language: str | None,
+                 extra: list[str] | None = None) -> list[str]:
     """Comando whisper-cli. Puro e testável. SEM VAD por decisão experimental
     (docs/vad-experiment.md + auditoria 2026-09: VAD adianta onset, colapsa
     caudas e apaga ~24 s de fala em gameplay) — nenhuma flag -vm/--vad aqui."""
-    return [binary, "-m", str(model), "-f", str(wav), "-ojf",
-            "-of", str(stem), "-l", language or "auto", "-nt"]
+    cmd = [binary, "-m", str(model), "-f", str(wav), "-ojf",
+           "-of", str(stem), "-l", language or "auto", "-nt"]
+    if extra:
+        cmd += list(extra)
+    return cmd
+
+
+def _resolve_model_file(model_size: str) -> Path | None:
+    for cand in (Path(f"models/ggml-{model_size}.bin"),
+                 Path.home() / ".cache" / "whisper" / f"ggml-{model_size}.bin"):
+        if cand.exists():
+            return cand
+    return None
+
+
+def _parse_transcription(data: dict, offset: float) -> list[Segment]:
+    """JSON whisper-cli → Segments. Regras idênticas às históricas do pipeline
+    (tokens de controle filtrados, texto limpo, offsets ms→s + offset)."""
+    segments: list[Segment] = []
+    for tr in data.get("transcription", []):
+        # Filtra na origem: tokens de controle ([eot], [sot], [_EOT_]...)
+        # nunca viram Word; o texto do segmento é limpo do que restar.
+        raw_tokens = tr.get("tokens", []) or []
+        words = []
+        for w in raw_tokens:
+            # Preserva o texto cru (espaço à esquerda = fronteira de
+            # palavra p/ smart_join); descarta vazios e especiais.
+            text = w.get("text") or ""
+            if not text.strip() or _is_special(text):
+                continue
+            words.append(Word(
+                text,
+                offset + float(w.get("offsets", {}).get("from", 0)) / 1000.0,
+                offset + float(w.get("offsets", {}).get("to", 0)) / 1000.0))
+        text = _clean_text((tr.get("text") or "").strip())
+        s = offset + float(tr.get("offsets", {}).get("from", 0)) / 1000.0
+        e = offset + float(tr.get("offsets", {}).get("to", 0)) / 1000.0
+        if not words:
+            words = _even_words(text, s, e)
+        segments.append(Segment(text=text, start=s, end=e, words=words))
+    return segments
+
+
+def _decode_chunk(binary: str, model: Path, wav: Path, language: str | None,
+                  offset: float) -> list[Segment]:
+    """1 chunk → Segments. Levanta RuntimeError se o whisper falhar."""
+    stem = wav.with_suffix("")
+    out_json = stem.with_suffix(".json")
+    # whisper.cpp atual: JSON sai em <input>.wav.json (ou <prefix>.json
+    # com -of); tokens reais só com -ojf; flag -nc não existe mais.
+    cmd = _whisper_cmd(binary, model, wav, stem, language)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if r.returncode != 0 or not out_json.exists():
+        raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")
+    data = json.loads(out_json.read_text(encoding="utf-8"))
+    out_json.unlink(missing_ok=True)
+    return _parse_transcription(data, offset)
 
 
 def transcribe_vulkan(video_path: str, model_size: str = "medium",
@@ -177,46 +235,46 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
             raise RuntimeError(f"modelo {model} não encontrado — baixe de HuggingFace (ex: ggerganov/whisper.cpp)")
     segments: list[Segment] = []
     print("   -> sem VAD (evidência: docs/vad-experiment.md)")
+    retry_model = None
+    if WHISPER_RETRY_MODEL and WHISPER_RETRY_MODEL.lower() not in ("off", "none"):
+        retry_model = _resolve_model_file(WHISPER_RETRY_MODEL)
+        if retry_model is not None and retry_model == model:
+            retry_model = None  # retry igual ao principal não adianta
+        if retry_model is not None:
+            print(f"   -> retry anti-alucinação: {retry_model.name} em chunks sinalizados")
+    n_flagged = n_recovered = 0
     try:
         audio_filter = CLIPPER_TRANSCRIBE_AUDIO_FILTER or None
         if audio_filter:
             print(f"   -> filtro de áudio p/ transcrição: {audio_filter}")
         for wav, offset in audio_chunks(video_path, audio_filter=audio_filter):
-            # whisper.cpp atual: JSON sai em <input>.wav.json (ou <prefix>.json
-            # com -of); tokens reais só com -ojf; flag -nc não existe mais.
-            stem = wav.with_suffix("")
-            out_json = stem.with_suffix(".json")
-            cmd = _whisper_cmd(binary, model, wav, stem, language)
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if r.returncode != 0 or not out_json.exists():
-                raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")
-            data = json.loads(out_json.read_text(encoding="utf-8"))
-            for tr in data.get("transcription", []):
-                # Filtra na origem: tokens de controle ([eot], [sot], [_EOT_]...)
-                # nunca viram Word; o texto do segmento é limpo do que restar.
-                raw_tokens = tr.get("tokens", []) or []
-                words = []
-                for w in raw_tokens:
-                    # Preserva o texto cru (espaço à esquerda = fronteira de
-                    # palavra p/ smart_join); descarta vazios e especiais.
-                    text = w.get("text") or ""
-                    if not text.strip() or _is_special(text):
-                        continue
-                    words.append(Word(
-                        text,
-                        offset + float(w.get("offsets", {}).get("from", 0)) / 1000.0,
-                        offset + float(w.get("offsets", {}).get("to", 0)) / 1000.0))
-                text = _clean_text((tr.get("text") or "").strip())
-                s = offset + float(tr.get("offsets", {}).get("from", 0)) / 1000.0
-                e = offset + float(tr.get("offsets", {}).get("to", 0)) / 1000.0
-                if not words:
-                    words = _even_words(text, s, e)
-                segments.append(Segment(text=text, start=s, end=e, words=words))
-            out_json.unlink(missing_ok=True)
+            chunk_segs = _decode_chunk(binary, model, wav, language, offset)
+            if retry_model is not None:
+                from . import quality as _q
+                text = " ".join(s.text for s in chunk_segs)
+                if _q.check(text)["flagged"]:
+                    n_flagged += 1
+                    try:
+                        alt = _decode_chunk(binary, retry_model, wav, language, offset)
+                        alt_text = " ".join(s.text for s in alt)
+                        if _q.choose_retry(True, _q.check(alt_text)["flagged"]) == "retry":
+                            chunk_segs = alt
+                            n_recovered += 1
+                            print(f"   -> chunk {offset:.0f}s: alucinação limpa pelo retry "
+                                  f"({retry_model.name})")
+                        else:
+                            print(f"   -> chunk {offset:.0f}s: retry manteve original "
+                                  f"(ambos sinalizados)")
+                    except RuntimeError as e:
+                        print(f"   ! chunk {offset:.0f}s: retry falhou ({e}) — mantém original")
+            segments.extend(chunk_segs)
     except RuntimeError:
         raise
     except Exception as e:
         raise RuntimeError(f"erro whisper.cpp Vulkan ({e})")
+    if n_flagged:
+        print(f"   -> anti-alucinação: {n_flagged} chunk(s) sinalizado(s), "
+              f"{n_recovered} recuperado(s)")
     if not segments:
         raise RuntimeError("whisper.cpp não gerou segmentos (áudio vazio?)")
     return segments

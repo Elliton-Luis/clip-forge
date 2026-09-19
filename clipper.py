@@ -620,10 +620,15 @@ def main() -> None:
                            help=f"Modelo ggml-* em models/ (padrão: {WHISPER_MODEL_SIZE})")
             q.add_argument("--start", type=float, default=0.0, help="Início do trecho (s)")
             q.add_argument("--dur", type=float, default=None, help="Duração do trecho (s)")
+            q.add_argument("--temp", type=float, default=None,
+                           help="Temperatura de decodificação -tp (experimento; padrão whisper)")
+            q.add_argument("--best-of", type=int, default=None,
+                           help="Best-of -bo (experimento; padrão whisper)")
             a = q.parse_args(sys.argv[2:])
             _lab.run_experiment(a.video, audio=a.audio, mode=a.mode,
                                 context_sec=a.context, model_size=a.whisper_model,
-                                start=a.start, dur=a.dur)
+                                start=a.start, dur=a.dur,
+                                temp=a.temp, best_of=a.best_of)
         else:
             q = _ap.ArgumentParser(description="Compara dois experimentos do lab.")
             q.add_argument("exp_a", help="Dir do experimento A (ex: debug/transcription-lab/experiment-001)")

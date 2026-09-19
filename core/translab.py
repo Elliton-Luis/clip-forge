@@ -146,8 +146,12 @@ def resolve_model(model_size: str) -> Path:
 
 
 def run_whisper_file(wav: Path, model_size: str,
-                     language: str | None = None) -> tuple[list, float]:
-    """Roda whisper-cli SEM VAD sobre um wav; retorna (transcription, segundos)."""
+                     language: str | None = None,
+                     temp: float | None = None,
+                     best_of: int | None = None) -> tuple[list, float]:
+    """Roda whisper-cli SEM VAD sobre um wav; retorna (transcription, segundos).
+
+    temp/best_of (opcionais, p/ experimentos de decodificação): -tp/-bo."""
     binary = _whisper_bin()
     model = resolve_model(model_size)
     stem = wav.with_suffix("")
@@ -156,6 +160,10 @@ def run_whisper_file(wav: Path, model_size: str,
         out_json.unlink()
     cmd = [binary, "-m", str(model), "-f", str(wav),
            "-ojf", "-of", str(stem), "-l", language or "auto", "-nt"]
+    if temp is not None:
+        cmd += ["-tp", str(temp)]
+    if best_of is not None:
+        cmd += ["-bo", str(best_of)]
     t0 = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
     dt = time.time() - t0
@@ -289,6 +297,7 @@ def run_experiment(video: str, audio: str = "original", mode: str = "chunks",
                    context_sec: float = 0.0, model_size: str = "medium",
                    language: str | None = None, start: float = 0.0,
                    dur: float | None = None,
+                   temp: float | None = None, best_of: int | None = None,
                    root: Path = LAB_ROOT) -> Path:
     """Executa um experimento e salva config/transcript/metrics. Retorna o dir."""
     if mode not in ("chunks", "global"):
@@ -311,7 +320,8 @@ def run_experiment(video: str, audio: str = "original", mode: str = "chunks",
             span = (dur if dur is not None
                     else (total - start if total else None))
             _extract_wav(video, start, span, audio_filter, wav)
-            items, dt = run_whisper_file(wav, model_size, language)
+            items, dt = run_whisper_file(wav, model_size, language,
+                                           temp=temp, best_of=best_of)
             proc_time = dt
             segments = parse_transcription(items, start)
             wav.unlink(missing_ok=True)
@@ -319,7 +329,8 @@ def run_experiment(video: str, audio: str = "original", mode: str = "chunks",
             for wav, ext_start, win_start, win_end in iter_chunk_wavs(
                     video, start, dur, CHUNK_SECONDS, context_sec,
                     audio_filter, tmpdir):
-                items, dt = run_whisper_file(wav, model_size, language)
+                items, dt = run_whisper_file(wav, model_size, language,
+                                             temp=temp, best_of=best_of)
                 proc_time += dt
                 segs = parse_transcription(items, ext_start)
                 if context_sec:
@@ -345,10 +356,13 @@ def run_experiment(video: str, audio: str = "original", mode: str = "chunks",
         "context_sec": context_sec,
         "range_start": start,
         "range_dur": dur,
+        "decode_temp": temp,
+        "decode_best_of": best_of,
     })
     config = {"video": str(video), "audio": audio, "mode": mode,
               "context_sec": context_sec, "model": model_size,
               "language": language or "auto", "start": start, "dur": dur,
+              "temp": temp, "best_of": best_of,
               "vad_enabled": False}
     (exp / "config.json").write_text(
         json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")

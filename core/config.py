@@ -26,6 +26,10 @@ def _int_env(name: str, default: int) -> int:
 
 # WHISPER_MODEL_SIZE: auto downgrade para "small" se RAM <=6GB, senão "medium"
 WHISPER_MODEL_SIZE = os.environ.get("WHISPER_MODEL_SIZE", _SAFE["whisper_model"])
+# Retry de chunks com alucinação (loop repetitivo): modelo maior usado UMA vez
+# por chunk sinalizado; "off"/vazio desliga. Medido 2026-09: large-v3 recupera
+# frase perdida pelo medium em gameplay (texto certo; sem trocar o default).
+WHISPER_RETRY_MODEL = os.environ.get("WHISPER_RETRY_MODEL", "large-v3")
 CLIPPER_CPU_THREADS = _int_env("CLIPPER_CPU_THREADS", _SAFE["cpu_threads"])
 CLIPPER_FFMPEG_THREADS = _int_env("CLIPPER_FFMPEG_THREADS", _SAFE["ffmpeg_threads"])
 CLIPPER_COMPUTE_TYPE = os.environ.get("CLIPPER_COMPUTE_TYPE", _SAFE["compute"])
