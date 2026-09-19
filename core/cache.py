@@ -7,14 +7,15 @@ import json
 import os
 from pathlib import Path
 from .models import Word, Segment
-from .config import WHISPER_MODEL_SIZE, WHISPER_LANGUAGE
+from .config import WHISPER_MODEL_SIZE, WHISPER_LANGUAGE, TRANSCRIPT_PIPELINE_VERSION
 
 
 def fingerprint(video_path: str, model_size: str | None = None) -> str:
     st = os.stat(video_path)
     lang = WHISPER_LANGUAGE or "auto"
     model = model_size or WHISPER_MODEL_SIZE
-    raw = f"{Path(video_path).resolve()}|{st.st_size}|{int(st.st_mtime)}|{model}|{lang}"
+    raw = (f"{Path(video_path).resolve()}|{st.st_size}|{int(st.st_mtime)}"
+           f"|{model}|{lang}|pipev{TRANSCRIPT_PIPELINE_VERSION}")
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 

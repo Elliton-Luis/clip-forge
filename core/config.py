@@ -45,6 +45,12 @@ CLIPPER_TRANSCRIBE_AUDIO_FILTER = os.environ.get("CLIPPER_TRANSCRIBE_AUDIO_FILTE
 # Guarda report para logar no preflight sem re-detectar
 _AUTO_LIMITS = _SAFE
 
+# Versão do pipeline de transcrição (entra no fingerprint do cache).
+# Aumente quando mudar qualquer semântica da transcrição (VAD, modelo,
+# retry, parse). v1 = era VAD (transcripts antigos NÃO são reutilizados:
+# outliers temporais da era VAD jamais voltam por cache).
+TRANSCRIPT_PIPELINE_VERSION = 2
+
 # janelas
 MIN_CLIP_SECONDS = 20
 MAX_CLIP_SECONDS = 90
