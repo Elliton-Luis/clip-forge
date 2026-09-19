@@ -336,6 +336,36 @@ def run_pipeline(cfg: dict) -> None:
 
 
 def main() -> None:
+    # Laboratório A/B de transcrição (sem VAD) — despacha antes do parse
+    # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
+    if len(sys.argv) > 1 and sys.argv[1] in ("transcribe-lab", "lab-compare"):
+        from core import translab as _lab
+        import argparse as _ap
+        if sys.argv[1] == "transcribe-lab":
+            q = _ap.ArgumentParser(description="Laboratório A/B de transcrição (sem VAD).")
+            q.add_argument("video", help="Vídeo de entrada")
+            q.add_argument("--audio", default="original",
+                           choices=["original", "normalize", "clean"],
+                           help="Áudio só p/ transcrição (padrão: original)")
+            q.add_argument("--mode", default="chunks", choices=["chunks", "global"],
+                           help="Chunks de 30s ou áudio inteiro (padrão: chunks)")
+            q.add_argument("--context", type=float, default=0.0,
+                           help="Segundos extras decodificados por chunk (só chunks, padrão: 0)")
+            q.add_argument("--whisper-model", default=WHISPER_MODEL_SIZE,
+                           help=f"Modelo ggml-* em models/ (padrão: {WHISPER_MODEL_SIZE})")
+            q.add_argument("--start", type=float, default=0.0, help="Início do trecho (s)")
+            q.add_argument("--dur", type=float, default=None, help="Duração do trecho (s)")
+            a = q.parse_args(sys.argv[2:])
+            _lab.run_experiment(a.video, audio=a.audio, mode=a.mode,
+                                context_sec=a.context, model_size=a.whisper_model,
+                                start=a.start, dur=a.dur)
+        else:
+            q = _ap.ArgumentParser(description="Compara dois experimentos do lab.")
+            q.add_argument("exp_a", help="Dir do experimento A (ex: debug/transcription-lab/experiment-001)")
+            q.add_argument("exp_b", help="Dir do experimento B")
+            a = q.parse_args(sys.argv[2:])
+            _lab.compare_experiments(a.exp_a, a.exp_b)
+        return
     args = parse_cli()
     if not args.video:
         from core import tui as tui_mod
