@@ -236,7 +236,20 @@ sem assinatura confiável só com volume — veredito em `docs/caption-audit.md`
 `--min-duration/--max-duration` (padrão 20/90, TUI tem os campos). O máximo é
 respeitado de verdade: janelas nascem ≤ max, o snap corta o excesso do `--pad`
 e a expansão p/ mínimo nunca estoura o máximo (mídia curta = clip curto, sem
-compensação mágica). Ex.: `--max-duration 60` garante clipes de até 60 s.
+compensação mágica). Nenhum clip passa do fim do vídeo: bounds de segmento do
+Whisper podem extrapolar o áudio (overshoot do decoder), mas build+snap
+clampam tudo em `media_end` (medido: janela [29.2, 60.8] em vídeo de 45.1 s
+vira clip dentro da mídia). Ex.: `--max-duration 60` garante clipes de até 60 s.
+
+### Falas simultâneas
+
+Words com overlap real (> 0.1 s) viram **cues coexistentes** com timestamps
+preservados — nunca uma sequência artificial ("EU VOU"+"NÃO VAI" em 10–11 s
+gera duas cues sobrepostas, exibidas em lanes/stacks diferentes). Sem
+diarização: sem nomes de pessoas, só simultaneidade mantida. Overlaps
+microscópicos (jitter de medição) seguem sequenciais. Quebra de cue também
+respeita fronteira de palavra: token de continuação (`ita` em `dire`+`ita`)
+nunca inicia cue — sem "DIRE"/"ITA" separados.
 
 ## Scoring e modelos
 
@@ -304,7 +317,9 @@ se indisponível), FFmpeg, API NVIDIA (requests/retries/latências/tokens;
 custo sempre `null`). Monitoramento: 1 thread, 1 amostra/2 s, só agregados.
 
 Cache (`--cache-dir`, ligado no `run.sh`): transcrição + scores por
-fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
+fingerprint `tamanho+mtime+modelo+idioma+versão-pipeline` — trocar o arquivo
+invalida sozinho; mudar a semântica da transcrição (`TRANSCRIPT_PIPELINE_VERSION`)
+invalida transcripts antigos (era VAD nunca volta por cache).
 `--force-retranscribe` / `--force-rescore` refazem cada camada.
 
 ## CLI completa
@@ -385,7 +400,10 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 - **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
   na TUI) preserva por clipe `captions.ass`, `captions.srt`,
   `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem +
-  auditoria WORD→CUE + drop reasons: `end <= start` vs `outside_selected_clip`)
+  auditoria WORD→CUE + drop reasons: `end <= start` vs `outside_selected_clip`
+  + ENERGIA POR WORD: rms do áudio no span de cada word, `SILÊNCIO?` quando o
+  Whisper afirma fala onde não há energia — diagnóstico report-only, nunca
+  desloca timestamp)
   em `debug/`, mais `transcript.txt` legível do vídeo. Testes:
   `python -m unittest discover -s tests`.
 - **Sem candidatos?** Vídeo sem fala — `segments: 0`.
