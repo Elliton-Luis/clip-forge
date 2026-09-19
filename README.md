@@ -316,6 +316,7 @@ fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
 | `--top N` | Quantos clipes gerar | 8 |
 | `--model NOME` | Modelo de scoring | env `NIM_MODEL` |
 | `--transcribe-backend B` | `auto`, `gpu`, `vulkan`, `openvino`, `cpu` | env ou `auto` |
+| `--whisper-model M` | Modelo Whisper (`medium`, `large-v3`, ...) — força máxima com PC em repouso | env ou `medium` |
 | `--debug-captions` | Preserva ASS/SRT/transcript/diagnóstico em `debug/` | off |
 | `--cache-dir DIR` | Ativa cache | desligado |
 | `--force-retranscribe` | Ignora cache de transcrição | off |
