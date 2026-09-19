@@ -173,6 +173,38 @@ modelo); cada chunk recarrega o modelo (segundos); utilização/VRAM ficam
 `null` no relatório (`nvidia-smi` não serve p/ Intel, `intel_gpu_top`
 ausente, sysfs do driver `xe` sem contadores — `null` honesto).
 
+### Laboratório de transcrição (sem VAD)
+
+`docs/vad-experiment.md` provou que o VAD prejudica timestamps (onset −0,67 s,
+cauda colapsada, truncagem de ~22 s em gameplay). O lab compara estratégias
+**sem VAD** sobre o mesmo áudio, sem tocar o pipeline produtivo:
+
+```bash
+python clipper.py transcribe-lab video.mkv --dur 30                     # baseline
+python clipper.py transcribe-lab video.mkv --dur 30 --audio clean       # áudio tratado
+python clipper.py transcribe-lab video.mkv --dur 30 --mode global       # áudio inteiro
+python clipper.py transcribe-lab video.mkv --start 15 --dur 30 --context 5  # contexto
+python clipper.py lab-compare debug/transcription-lab/experiment-001 \
+                          debug/transcription-lab/experiment-002
+```
+
+Eixos: `--audio original|normalize|clean` (só p/ transcrição; o vídeo final
+nunca usa esse áudio), `--mode chunks|global`, `--context S` (só chunks),
+`--whisper-model` (qualquer `ggml-*.bin` em `models/`), `--start/--dur` p/
+recortar o trecho. Cada experimento salva `config.json`, `transcript.json`,
+`transcript.txt`, `words.txt` (`[MM:SS.mmm → MM:SS.mmm] WORD`) e `metrics.json`
+em `debug/transcription-lab/experiment-NNN/` (ignorado no git); `lab-compare`
+imprime tabela palavra-por-palavra com Δinício/Δfim (nunca média de timestamps).
+
+Evidência medida (2026-09-19, medium, trechos de 30 s):
+
+| Comparação | Resultado |
+|---|---|
+| chunks vs global (limpo e ruim) | **idênticos** (101/101 e 23/23 words, Δ=0,000) — chunking não degrada |
+| `--audio clean` no ruim | 23→26 words, 0 degenerados, pontuação/partículas melhores, mesmo tempo |
+| `--audio clean` no limpo | 101→99 words, 6→5 degenerados, Δ médio ~0,25 s |
+| `--context 5` (fronteira 30 s) | **diverge** (Δ médio ~0,56 s) — sem benefício medido aqui |
+
 ## Scoring e modelos
 
 Pontuar "isso é viral?" usa LLM remoto **só com texto** (trecho de até 1500
