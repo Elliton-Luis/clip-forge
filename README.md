@@ -229,6 +229,36 @@ de ler o JSON.
 > 17 min num vídeo de 7 min (85% do run). O default Nemotron é bem mais rápido
 > com o mesmo momento selecionado.
 
+## Revisão humana da transcrição
+
+A transcrição aprovada é a fonte da verdade: scoring, títulos, legendas e
+cortes consomem ela, nunca o Whisper direto. Texto e timestamps são
+independentes (corrigir "dire ita"→"direita" não toca `start/end`).
+
+```bash
+python clipper.py video.mkv --out cortes/ --review-transcript --review-titles
+# 1. transcreve → work/<video>/transcription/{transcript.json, words.txt}
+# 2. PAUSA: edite words.txt ([MM:SS.mmm → MM:SS.mmm] texto), Enter → APROVADA
+# 3. scoring → PAUSA: edite work/<video>/titles.txt, Enter (valida grounding)
+# 4. cortes + manifest.json (com title_warnings/highlight_warnings por clipe)
+```
+
+Regenerar sem Whisper (corrigiu legenda? só re-renderiza):
+
+```bash
+python clipper.py transcribe-approve work/<video>/transcription  # valida + aprova
+python clipper.py video.mkv --out cortes/ --work-dir work/<video>  # pula o Whisper
+python clipper.py finalize work/<video> --out cortes/  # confirma [Y/N], limpa
+```
+
+Detalhes: `--custom-words vocab.json` (`{"words": [...]}`) aplica correção de
+palavra inteira após transcrever (whisper.cpp não tem prompting de vocabulário;
+o mecanismo é pós-processamento exato e registrado). Títulos com palavras fora
+da transcrição aprovada geram `title_warnings` no manifest em vez de passarem
+silenciosamente (o prompt do scoring também exige título-recorte fiel). Na TUI,
+as mesmas opções são checkboxes. `work/` é intermediário (ignorado no git);
+`finalize` recusa sessão não aprovada e guarda `approved-transcript.json` no out.
+
 ## Métricas e cache
 
 Toda execução gera: resumo `EXECUTION METRICS` no terminal + JSON próprio em
@@ -263,6 +293,10 @@ fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
 | `--max-per-10min N` (1–20) | Máximo por janela de 10 min | 2 |
 | `--context TEXTO` | Contexto injetado no prompt | — |
 | `--examples JSON` | Few-shot (ver `examples.json`, máx 4) | — |
+| `--review-transcript` | Pausa p/ revisar/aprovar transcrição (`work/`) | off |
+| `--review-titles` | Pausa p/ revisar títulos (`work/titles.txt`) | off |
+| `--work-dir DIR` | Usa transcrição APROVADA, pula o Whisper | — |
+| `--custom-words JSON` | Vocabulário (`{"words": [...]}`), correção exata | — |
 
 ```bash
 # calibrado pro seu conteúdo
