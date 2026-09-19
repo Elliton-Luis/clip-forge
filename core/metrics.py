@@ -439,6 +439,11 @@ class ExecutionMetrics:
         def show(x, suffix=""):
             return f"{x}{suffix}" if x is not None else "n/a"
 
+        def show_gpu(x, suffix=""):
+            # Telemetria Intel indisponível (sem nvidia-smi/intel_gpu_top):
+            # n/a aqui é ausência de medidor, não de GPU (ver Backend/Device).
+            return f"{x}{suffix}" if x is not None else "n/a (sem telemetria Intel)"
+
         status = (ex.get("status") or self._status).upper()
         backend = str(tr.get("backend_used") or "n/a").upper()
         if (tr.get("backend_used") or "") in ("vulkan", "openvino"):
@@ -477,8 +482,8 @@ class ExecutionMetrics:
             row("RTF:", str(tr.get("rtf") if tr.get("rtf") is not None else "n/a")),
             mid,
             section("RESOURCES"),
-            row("GPU usage:", show(gpu.get("avg_util_pct"), "%")),
-            row("VRAM peak:", show(gpu.get("vram_peak_mb"), " MB")),
+            row("GPU usage:", show_gpu(gpu.get("avg_util_pct"), "%")),
+            row("VRAM peak:", show_gpu(gpu.get("vram_peak_mb"), " MB")),
             row("CPU avg:", show(cpu.get("avg_pct"), "%")),
             row("CPU peak:", show(cpu.get("peak_pct"), "%")),
             row("RAM peak:", show(ram.get("peak_mb"), " MB")),
