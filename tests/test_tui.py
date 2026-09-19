@@ -116,6 +116,21 @@ class TestBooleans(unittest.TestCase):
         ui._sync_from_widgets()
         self.assertEqual(ui.cfg["cache_dir"], ".cache/clipper")
 
+    def test_caption_mode_cycles_and_syncs(self):
+        ui = self._tui()
+        self.assertEqual(ui._get("caption_mode"), "words")
+        ui.caption_idx = 1
+        self.assertEqual(ui._get("caption_mode"), "intervals")
+        ui._sync_from_widgets()
+        self.assertEqual(ui.cfg["caption_mode"], "intervals")
+
+    def test_acoustic_toggle(self):
+        ui = self._tui()
+        self.assertFalse(ui._get("acoustic_captions"))
+        ui._toggle("acoustic_captions")
+        self.assertTrue(ui._get("acoustic_captions"))
+        self.assertTrue(ui.cfg["acoustic_captions"])
+
 
 class TestModels(unittest.TestCase):
     def test_load_has_default(self):
@@ -159,11 +174,25 @@ class TestValidation(unittest.TestCase):
             ({"max_per_10min": 99}, "--max-per-10min"),
             ({"model": ""}, "Modelo"),
             ({"transcribe_backend": "cuda"}, "Backend"),
+            ({"caption_mode": "x"}, "--caption-mode"),
+            ({"laughs": "/nao/existe.txt"}, "risadas"),
         ]
         for over, needle in cases:
             errs = validate_for_run(full_cfg(**over))
             self.assertTrue(any(needle in e for e in errs),
                             f"{over} deveria falhar com {needle!r}: {errs}")
+
+    def test_laughs_real_file_passes(self):
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".txt") as f:
+            self.assertEqual(validate_for_run(full_cfg(laughs=f.name)), [])
+
+    def test_cli_round_trip_caption_flags(self):
+        import shlex
+        from clipper import cli_command, parse_cli, config_from_args
+        cfg = full_cfg(caption_mode="intervals", acoustic_captions=True)
+        back = config_from_args(parse_cli(shlex.split(cli_command(cfg))[2:]))
+        self.assertEqual(back, cfg)
 
     def test_cli_validate_messages_kept(self):
         for cfg, msg in [({"pad": 9}, "--pad deve estar entre 0 e 5"),

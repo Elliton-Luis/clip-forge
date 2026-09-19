@@ -18,6 +18,7 @@ from core.config import MIN_CLIP_SECONDS, MAX_CLIP_SECONDS
 MODELS_PATH = Path(__file__).resolve().parent.parent / "config" / "models.json"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".flv", ".mpg", ".mpeg"}
 BACKENDS = ["auto", "gpu", "vulkan", "openvino", "cpu"]
+CAPTION_MODES = ["words", "intervals"]
 
 
 # ----------------------------------------------------------------------------
@@ -151,6 +152,10 @@ def validate_for_run(cfg: dict) -> list[str]:
         _resolve_model(cfg.get("whisper_model") or "medium")
     except RuntimeError as e:
         errs.append(f"Modelo Whisper inválido: {e}")
+    if (cfg.get("caption_mode") or "words") not in CAPTION_MODES:
+        errs.append("--caption-mode deve ser words|intervals")
+    if cfg.get("laughs") and not Path(cfg["laughs"]).expanduser().exists():
+        errs.append(f"Arquivo de risadas não encontrado: {cfg['laughs']}")
     return errs
 
 
@@ -168,6 +173,7 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         ("Máx/10min", str(cfg.get("max_per_10min"))),
         ("Vertical", "sim" if not cfg.get("no_vertical") else "não"),
         ("Legendas", "sim" if not cfg.get("no_captions") else "não"),
+        ("Modo legenda", cfg.get("caption_mode") or "words"),
         ("Audio features", "sim" if not cfg.get("no_audio_features") else "não"),
         ("Cache", cfg.get("cache_dir") or "desligado"),
     ]
@@ -187,6 +193,10 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         rows.append(("Revisão", "títulos (pausa p/ editar)"))
     if cfg.get("work_dir"):
         rows.append(("Sessão", str(cfg["work_dir"])))
+    if cfg.get("acoustic_captions"):
+        rows.append(("Estouro", "*ÁUDIO ESTOURADO* em amarelo"))
+    if cfg.get("laughs"):
+        rows.append(("Risadas", str(cfg["laughs"])))
     return rows
 
 
@@ -233,6 +243,8 @@ class TUI:
         self.model_idx = default_model_index(models, cfg.get("model") or DEFAULT_MODEL)
         self.backend_idx = BACKENDS.index(cfg.get("transcribe_backend") or "auto") \
             if (cfg.get("transcribe_backend") or "auto") in BACKENDS else 0
+        self.caption_idx = CAPTION_MODES.index(cfg.get("caption_mode") or "words") \
+            if (cfg.get("caption_mode") or "words") in CAPTION_MODES else 0
         self.pos = 0
         self.msg = ""
         self.use_cache = bool(cfg.get("cache_dir"))
@@ -253,6 +265,9 @@ class TUI:
             ("max_per_10min", "Máximo por 10 min (1–20)", "int"),
             ("vertical", "Vídeo vertical", "bool"),
             ("captions", "Legendas", "bool"),
+            ("caption_mode", "Modo das legendas", "captionmode"),
+            ("acoustic_captions", "Legenda *ÁUDIO ESTOURADO*", "bool"),
+            ("laughs", "Arquivo de risadas (avançado)", "text"),
             ("audio_features", "Audio features", "bool"),
             ("use_cache", "Usar cache", "bool"),
             ("cache_dir", "Diretório do cache", "text"),
@@ -281,6 +296,8 @@ class TUI:
             return self.models[self.model_idx]["name"]
         if key == "transcribe_backend":
             return BACKENDS[self.backend_idx]
+        if key == "caption_mode":
+            return CAPTION_MODES[self.caption_idx]
         return self.cfg.get(key, "")
 
     def _toggle(self, key):
@@ -304,11 +321,14 @@ class TUI:
             self.cfg["review_transcript"] = not self.cfg.get("review_transcript", False)
         elif key == "review_titles":
             self.cfg["review_titles"] = not self.cfg.get("review_titles", False)
+        elif key == "acoustic_captions":
+            self.cfg["acoustic_captions"] = not self.cfg.get("acoustic_captions", False)
 
     def _sync_from_widgets(self):
         # Semântica positiva da tela → flags negativas da CLI, sem inversão.
         self.cfg["model"] = self.models[self.model_idx]["id"]
         self.cfg["transcribe_backend"] = BACKENDS[self.backend_idx]
+        self.cfg["caption_mode"] = CAPTION_MODES[self.caption_idx]
         if not self.use_cache:
             self.cfg["cache_dir"] = None
         elif not self.cfg.get("cache_dir"):
@@ -328,7 +348,7 @@ class TUI:
                 disp = f"[{'x' if val else ' '}] {label}"
             elif kind == "action":
                 disp = label
-            elif kind in ("model", "backend"):
+            elif kind in ("model", "backend", "captionmode"):
                 disp = f"{label}: < {val} >"
             else:
                 shown = "(vazio)" if val in ("", None) else str(val)
@@ -416,10 +436,13 @@ class TUI:
                 elif key == "transcribe_backend":
                     d = -1 if ch == curses.KEY_LEFT else 1
                     self.backend_idx = (self.backend_idx + d) % len(BACKENDS)
+                elif key == "caption_mode":
+                    d = -1 if ch == curses.KEY_LEFT else 1
+                    self.caption_idx = (self.caption_idx + d) % len(CAPTION_MODES)
             elif ch in (10, 13, curses.KEY_ENTER):
                 if kind == "bool":
                     self._toggle(key)
-                elif key in ("model", "transcribe_backend"):
+                elif key in ("model", "transcribe_backend", "caption_mode"):
                     pass  # setas alteram; Enter não faz nada aqui
                 elif key == "process":
                     self._sync_from_widgets()

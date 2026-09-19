@@ -97,7 +97,9 @@ dependência nova); sem terminal compatível, a CLI continua funcionando.
 A TUI monta a **mesma configuração** da CLI (nada é reimplementado):
 lista `videos/` para escolher a entrada (ou caminho manual), 9 modelos de
 scoring (`config/models.json`, só LLMs de texto verificados), backend,
-números (validados: `--top` > 0, `--pad` 0–5 etc.), checkboxes
+números (validados: `--top` > 0, `--pad` 0–5 etc.), modo das legendas
+(`words`/`intervals` com ←→), `[x] Legenda *ÁUDIO ESTOURADO*`, arquivo de
+risadas, checkboxes
 (`[x] Vídeo vertical` = sem `--no-vertical`), contexto/examples e cache.
 Antes de executar há uma tela de confirmação com o resumo **e o comando CLI
 equivalente** (ex.: `python clipper.py video.mp4 --top 5 --model ...`),
