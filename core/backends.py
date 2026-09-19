@@ -151,13 +151,13 @@ def _whisper_cpp_bin() -> str | None:
     return None
 
 
-def _vad_model() -> Path | None:
-    """Modelo Silero VAD p/ whisper.cpp (--vad). Opcional: sem ele, segue sem VAD."""
-    for cand in (Path("models/ggml-silero-v5.1.2.bin"),
-                 Path.home() / ".cache" / "whisper" / "ggml-silero-v5.1.2.bin"):
-        if cand.exists():
-            return cand
-    return None
+def _whisper_cmd(binary: str, model: Path, wav: Path, stem: Path,
+                 language: str | None) -> list[str]:
+    """Comando whisper-cli. Puro e testável. SEM VAD por decisão experimental
+    (docs/vad-experiment.md + auditoria 2026-09: VAD adianta onset, colapsa
+    caudas e apaga ~24 s de fala em gameplay) — nenhuma flag -vm/--vad aqui."""
+    return [binary, "-m", str(model), "-f", str(wav), "-ojf",
+            "-of", str(stem), "-l", language or "auto", "-nt"]
 
 
 def transcribe_vulkan(video_path: str, model_size: str = "medium",
@@ -176,14 +176,7 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
         else:
             raise RuntimeError(f"modelo {model} não encontrado — baixe de HuggingFace (ex: ggerganov/whisper.cpp)")
     segments: list[Segment] = []
-    vad = _vad_model()
-    if vad is not None:
-        # VAD do próprio whisper.cpp (Silero): segmenta por fala real,
-        # preserva pausas e evita alucinar em trecho sem voz. Medido em
-        # áudio real: mais tokens de fala e gaps preservados.
-        print(f"   -> VAD ativo ({vad.name})")
-    else:
-        print("   ! modelo VAD ausente (models/ggml-silero-v5.1.2.bin) — sem VAD")
+    print("   -> sem VAD (evidência: docs/vad-experiment.md)")
     try:
         audio_filter = CLIPPER_TRANSCRIBE_AUDIO_FILTER or None
         if audio_filter:
@@ -193,10 +186,7 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
             # com -of); tokens reais só com -ojf; flag -nc não existe mais.
             stem = wav.with_suffix("")
             out_json = stem.with_suffix(".json")
-            cmd = [binary, "-m", str(model), "-f", str(wav), "-ojf",
-                   "-of", str(stem), "-l", language or "auto", "-nt"]
-            if vad is not None:
-                cmd += ["-vm", str(vad), "--vad"]
+            cmd = _whisper_cmd(binary, model, wav, stem, language)
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if r.returncode != 0 or not out_json.exists():
                 raise RuntimeError(f"whisper.cpp rc={r.returncode}: {(r.stderr or '')[:200]}")

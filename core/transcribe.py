@@ -44,7 +44,9 @@ def _transcribe_cpu(video_path: str) -> list[Segment]:
     model = WhisperModel(WHISPER_MODEL_SIZE, device=CLIPPER_DEVICE, compute_type=ctype,
                          cpu_threads=CLIPPER_CPU_THREADS, num_workers=1)
     raw_segments, info = model.transcribe(
-        video_path, word_timestamps=True, vad_filter=True, language=WHISPER_LANGUAGE,
+        # Sem VAD também no fallback CPU: mesma evidência do caminho Vulkan
+        # (VAD apaga fala e colapsa timestamps; ver docs/vad-experiment.md).
+        video_path, word_timestamps=True, vad_filter=False, language=WHISPER_LANGUAGE,
     )
     segments: list[Segment] = []
     for seg in raw_segments:
