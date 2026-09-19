@@ -158,14 +158,38 @@ def _ass_time(t: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
+def is_degenerate_word(w) -> bool:
+    """True se o Word não tem intervalo temporal válido (end <= start).
+
+    Tokens degenerados vêm do Whisper.cpp+VAD (ex: 20.760→20.760) como
+    continuação alucinada pós-fala. Nunca devem virar caption: sem
+    intervalo real, qualquer duração seria inventada. Palavras curtas
+    mas válidas (0 < dur < CAPTION_MIN_DURATION, ex: "ah" 10.0→10.12)
+    NÃO são degeneradas e continuam cobertas pela duração mínima visual.
+    """
+    try:
+        return not (w.end > w.start)
+    except Exception:
+        return True
+
+
+def valid_caption_words(words: list) -> list:
+    """Fronteira transcrição→captions: só words com end > start."""
+    return [w for w in (words or []) if not is_degenerate_word(w)]
+
+
 def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
     """Agrupa palavras em cues (s_abs, e_abs, texto_limpo). Puro e testável.
 
     Mesmas garantias do build_srt: só palavras dentro do corte, texto limpo,
     sem cues vazias. Tempos ainda ABSOLUTOS; a conversão p/ relativo é feita
     pelo formatador (SRT/ASS) subtraindo clip_start de forma determinística.
+    Words degenerados (end <= start, ex: VAD 20.760→20.760) são descartados
+    aqui — ponto único de filtragem (cobre SRT, ASS e debug, inclusive
+    transcripts em cache) — para que o fallback CAPTION_MIN_DURATION nunca
+    transforme timestamp inválido em cue artificial de 1.0s.
     """
-    words = sorted(words, key=lambda w: w.start)
+    words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
     cues: list[list] = []
     cur: list = []
@@ -528,6 +552,10 @@ def validate_cues(words: list, clip_start: float, clip_end: float,
     for w in words:
         if w.end <= clip_start or w.start >= clip_end:
             continue
+        if is_degenerate_word(w):
+            # Descartado em _group_cues por regra de domínio (end <= start);
+            # não é "palavra sem cobertura", é timestamp inválido do Whisper.
+            continue
         # Palavra em tempo RELATIVO (abs - clip_start) contra cues relativas.
         rs, re_ = w.start - clip_start, w.end - clip_start
         covered = any(cs <= rs + 1e-6 and re_ - 1e-6 <= ce
@@ -610,6 +638,12 @@ def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
         flat = text.replace("\n", " / ")
         L += [f"[CAP] {_fmt_ts(cs)} → {_fmt_ts(ce)}  {flat!r}",
               f"      abs esperado: {_fmt_ts(clip_start + cs)} → {_fmt_ts(clip_start + ce)}"]
+    dropped = [w for w in sorted(words, key=lambda x: x.start)
+               if is_degenerate_word(w) and (w.text or "").strip()]
+    L += ["", f"WORDS DEGENERADOS DESCARTADOS: {len(dropped)}"]
+    for w in dropped:
+        L += [f'DROPPED DEGENERATE WORD: text={w.text.strip()!r} '
+              f'start={w.start:.3f} end={w.end:.3f} reason=end <= start']
     L += ["", "CHECAGEM FINAL"]
     if not warnings:
         L.append("OK: sem divergências (rel>=0, fim> início, dentro da duração).")

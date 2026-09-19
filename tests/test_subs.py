@@ -356,5 +356,69 @@ class TestMultiSilenceAndLines(unittest.TestCase):
         self.assertLessEqual(cues[-1][1], 30.0 + 1e-6)
 
 
+class TestDegenerateWords(unittest.TestCase):
+    """Regra de domínio: só end > start gera caption (VAD 20.760→20.760)."""
+
+    def test_zero_duration_generates_no_caption(self):
+        self.assertEqual(build_srt([W("vou", 10.0, 10.0)], 0.0, 30.0), "")
+
+    def test_negative_duration_generates_no_caption(self):
+        self.assertEqual(build_srt([W("vou", 10.0, 9.9)], 0.0, 30.0), "")
+
+    def test_short_but_valid_word_is_kept(self):
+        srt = build_srt([W("ah", 10.0, 10.2)], 0.0, 30.0)
+        self.assertIn("AH", srt)
+
+    def test_normal_word_preserves_timestamp(self):
+        cues = parse_cues(build_srt([W("mundo", 10.0, 11.5)], 0.0, 30.0))
+        self.assertEqual(len(cues), 1)
+        self.assertAlmostEqual(cues[0][0], 10.0, places=2)
+        self.assertAlmostEqual(cues[0][1], 11.5, places=2)
+
+    def test_consecutive_degenerate_words_generate_nothing(self):
+        words = [W("vou", 20.76, 20.76), W("aprender", 20.76, 20.76),
+                 W("aí", 20.76, 20.76)]
+        srt = build_srt(words, 0.0, 31.21)
+        self.assertEqual(srt, "")
+        self.assertNotIn("21,760", srt)
+
+    def test_long_gap_has_no_cue_during_silence(self):
+        words = [W("eu", 20.59, 20.76),
+                 W("vou", 20.76, 20.76), W("aprender", 20.76, 20.76),
+                 W("aí", 20.76, 20.76),
+                 W("não", 30.0, 31.21)]
+        cues = parse_cues(build_srt(words, 0.0, 31.21))
+        self.assertTrue(cues)
+        for s, e, _ in cues:
+            self.assertGreater(e, s)
+        starts = sorted(s for s, _, _ in cues)
+        # Nenhuma cue pode começar dentro do silêncio (após o burst,
+        # antes da fala real em 30.0), exceto a tolerância de 1.0s da
+        # duração mínima visual aplicada à última palavra válida.
+        for s in starts:
+            self.assertTrue(s < 22.0 or s >= 30.0 - 1e-6,
+                            f"cue artificial no silêncio: {s}")
+        self.assertTrue(any(abs(s - 30.0) < 1e-6 for s in starts))
+
+    def test_padding_is_not_drift(self):
+        # speech 30.0→31.0, pad 0.8 → clip 29.2→31.8: caption ≈0.8, sem preencher o fim.
+        words = [W("olá", 30.0, 30.4), W("mundo", 30.5, 31.0)]
+        cues = parse_cues(build_srt(words, 29.2, 31.8))
+        self.assertEqual(len(cues), 1)
+        self.assertAlmostEqual(cues[0][0], 0.8, places=2)
+        self.assertLess(cues[0][1], 31.8 - 29.2 - 1e-6)
+
+    def test_degenerate_words_are_not_uncovered(self):
+        words = [W("ok", 10.0, 10.5), W("vou", 20.76, 20.76)]
+        cues = [(10.0, 10.5, "OK")]
+        self.assertEqual(validate_cues(words, 0.0, 30.0, cues), [])
+
+    def test_debug_reports_dropped_degenerate(self):
+        words = [W("ok", 10.0, 10.5), W("vou", 20.76, 20.76)]
+        txt = render_caption_debug("c", 0.0, 30.0, words, [(10.0, 10.5, "OK")], [])
+        self.assertIn("DROPPED DEGENERATE WORD", txt)
+        self.assertIn("20.760", txt)
+
+
 if __name__ == "__main__":
     unittest.main()
