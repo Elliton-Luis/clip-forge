@@ -301,7 +301,7 @@ class TestHook(unittest.TestCase):
         dialogues = [l for l in a.splitlines() if l.startswith("Dialogue")]
         hook = [d for d in dialogues if ",Hook," in d]
         self.assertEqual(len(hook), 1)
-        self.assertIn("0:00:00.30,0:00:02.80", hook[0])
+        self.assertIn("0:00:00.30,0:00:05.00", hook[0])
         self.assertIn("ESCOLHA", hook[0])
 
     def test_no_hook_without_title(self):
@@ -318,7 +318,14 @@ class TestHook(unittest.TestCase):
     def test_hook_max_three_lines(self):
         lines = build_hook_lines("Essa foi a pior escolha da minha vida inteira mesmo")
         self.assertLessEqual(len(lines), 3)
-        self.assertTrue(all(len(l) <= 18 for l in lines))
+        self.assertTrue(all(len(l) <= 16 for l in lines))
+
+    def test_hook_inside_top_blur_band(self):
+        from core.video import HOOK_MARGIN_V, HOOK_FONT_SIZE, HOOK_END_SEC
+        from core.video import LAYOUT_H, LAYOUT_MAIN_H
+        band = (LAYOUT_H - LAYOUT_MAIN_H) // 2  # 360
+        self.assertLess(HOOK_MARGIN_V + 2 * HOOK_FONT_SIZE, band)
+        self.assertGreaterEqual(HOOK_END_SEC, 4.0)
 
 
 class TestDoubleValidation(unittest.TestCase):

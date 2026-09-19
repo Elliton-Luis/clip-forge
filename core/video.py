@@ -437,10 +437,10 @@ def _speaker_color(speaker_id: str) -> str:
 # Ordem determinística de atribuição de cores quando não há diarização.
 SPEAKER_ORDER: list[str] = ["A", "B", "C", "D"]
 
-HOOK_FONT_SIZE = 68
-HOOK_MAX_CHARS_PER_LINE = 18
-HOOK_MARGIN_V = 320  # top-center, abaixo da faixa superior; some em 2.8s
-HOOK_END_SEC = 2.8
+HOOK_FONT_SIZE = 84
+HOOK_MAX_CHARS_PER_LINE = 16
+HOOK_MARGIN_V = 100  # dentro da faixa borrada superior (0-360); nunca na área principal
+HOOK_END_SEC = 5.0
 HOOK_START_SEC = 0.3
 
 # Lanes verticais (anti-overlap): faixa inferior dividida em slots de altura
@@ -569,8 +569,8 @@ def build_ass(words: list, clip_start: float, clip_end: float,
     Mesmas garantias de tempo/texto do build_srt (mesmo núcleo).
     highlight: set de palavras (lower) pintadas de amarelo — ver
     highlight_words_from_title. animate: pop discreto por bloco (280 ms).
-    hook_title: título do scoring vira cartela [0.3,2.8] no topo (some
-    depois); vazio = sem hook (nunca usa filename fallback).
+    hook_title: título do scoring vira cartela [0.3,5.0] na faixa borrada
+    superior (fora da área principal); vazio = sem hook (nunca usa filename fallback).
     """
     duration = max(0.0, clip_end - clip_start)
     cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end),
