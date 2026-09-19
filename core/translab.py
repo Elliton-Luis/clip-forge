@@ -52,6 +52,13 @@ AUDIO_PRESETS = {
     # highpass: corta sub-grave que mascara a voz; dynaudnorm: nivela fala
     # baixa sem estourar picos; loudnorm: alvo final padrão.
     "clean": "highpass=f=80,dynaudnorm,loudnorm=I=-16:TP=-1.5:LRA=11",
+    # Compressão dinâmica: aproxima fala baixa do teto sem amplificar picos.
+    "compressed": ("acompressor=threshold=-20dB:ratio=4:attack=20:release=200,"
+                   "loudnorm=I=-16:TP=-1.5:LRA=11"),
+    # Redução adaptativa de ruído (sem perfil): teste contra gameplay.
+    "denoised": "afftdn=nf=-25,loudnorm=I=-16:TP=-1.5:LRA=11",
+    # Reconstrução de picos clipados (interpolação; não recupera destruído).
+    "declipped": "adeclip,loudnorm=I=-16:TP=-1.5:LRA=11",
 }
 
 CHUNK_EPS = 0.001  # tolerância p/ palavra exatamente na borda do chunk

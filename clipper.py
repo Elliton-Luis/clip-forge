@@ -609,7 +609,8 @@ def main() -> None:
             q = _ap.ArgumentParser(description="Laboratório A/B de transcrição (sem VAD).")
             q.add_argument("video", help="Vídeo de entrada")
             q.add_argument("--audio", default="original",
-                           choices=["original", "normalize", "clean"],
+                           choices=["original", "normalize", "clean",
+                                    "compressed", "denoised", "declipped"],
                            help="Áudio só p/ transcrição (padrão: original)")
             q.add_argument("--mode", default="chunks", choices=["chunks", "global"],
                            help="Chunks de 30s ou áudio inteiro (padrão: chunks)")
