@@ -227,8 +227,9 @@ def group_interval_words(words: list, clip_start: float, clip_end: float) -> lis
                         if cut_at is not None:
                             cues.append(cur[:cut_at + 1])
                             cur = cur[cut_at + 1:]
-                    cues.append(list(cur))
-                    cur = []
+                    if cur:
+                        cues.append(list(cur))
+                        cur = []
             cur.append(w)
         if cur:
             cues.append(list(cur))

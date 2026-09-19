@@ -43,8 +43,9 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
    composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
    vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
-   palavras do título, pop de 280 ms) + **hook** (título do scoring nos
-   primeiros 2,8 s, some depois); encode `h264_qsv` (B580) com fallback
+   palavras do título, pop de 280 ms) + **hook** (título do scoring em
+   destaque grande nos primeiros 5 s, só na faixa borrada superior, nunca
+   sobre o vídeo principal); encode `h264_qsv` (B580) com fallback
    `libx264`.
    Texto das cues remontado por `smart_join` (respeita fronteiras de token:
    "direita", não "dire ita"); tokens `[eot]/[sot]` filtrados na origem.
@@ -222,6 +223,21 @@ Evidência medida (2026-09-19, medium, trechos de 30 s):
 | `--context 5` (fronteira 30 s) | **diverge** (Δ médio ~0,56 s) — sem benefício medido aqui |
 | presets em áudio clipado 90 s (`compressed/denoised/declipped`) | 0 deg em todos, mas +27 extras com Δ~0,6–0,8 s e confiança menor (0.72–0.75 vs 0.84) — assinatura de alucinação, **nada vira default** |
 
+### Laboratório de legendas (words vs intervals)
+
+```bash
+python clipper.py caption-lab video.mkv --start 0 --dur 30 --cache-dir /tmp/c
+# debug/caption-lab/<video>_0-30/{words.srt,intervals.srt,compare.json}
+```
+
+`--caption-mode intervals` agrupa por rajada de fala (pausas < 0.8 s não
+quebram; rajadas > 10 s partem em fronteira de palavra) em vez de blocos de
+leitura (gap 0.4 s, 8 words, 48 chars). Medido: limpo 30 s → 15 cues/89% vs
+5 cues/95%, max 3.1 s vs 9.7 s; gameplay 60 s → 29 cues/99.9% vs 9/100%, max
+4.8 s vs 10.1 s; 0 palavras partidas nos dois (regra de fronteira vale nos
+dois modos). **Default segue `words`** — intervals é mais calmo, words é mais
+ritmado; a escolha final é de olho no vídeo renderizado, não na tabela.
+
 ### Áudio estourado (detecção, sem adivinhação)
 
 `core/acoustic.py` detecta clipping digital sustentado (peak ≥ 0.99 + rms ≥
@@ -348,6 +364,7 @@ invalida transcripts antigos (era VAD nunca volta por cache).
 | `--laughs FILE` | Ranges `INICIO FIM` p/ *RISADA ESTOURADA* amarela | — |
 | `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
 | `--no-captions` | Sem legenda queimada | legenda on |
+| `--caption-mode` | `words` (blocos de leitura) ou `intervals` (rajadas, experimental) | `words` |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
 | `--min-score F` (0–10) | Score mínimo | 6.0 |
 | `--max-per-10min N` (1–20) | Máximo por janela de 10 min | 2 |
