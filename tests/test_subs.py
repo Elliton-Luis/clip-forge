@@ -503,5 +503,72 @@ class TestWordBoundaryGrouping(unittest.TestCase):
         self.assertNotIn(" ITA", srt.replace("DIREITA", ""))
 
 
+class TestSimultaneousSpeech(unittest.TestCase):
+    """Falas sobrepostas viram cues coexistentes, nunca sequência."""
+
+    def test_criterion_two_overlapping_cues(self):
+        words = [W(" EU", 10.0, 10.5), W(" VOU", 10.5, 11.0),
+                 W(" NÃO", 10.2, 10.5), W(" VAI", 10.5, 10.8)]
+        cues = _group_cues(words, 0.0, 30.0)
+        texts = sorted(c[2] for c in cues)
+        self.assertEqual(texts, ["EU VOU", "NÃO VAI"])
+        spans = sorted((c[0], c[1]) for c in cues)
+        self.assertAlmostEqual(spans[0][0], 10.0, places=2)
+        self.assertAlmostEqual(spans[1][0], 10.2, places=2)
+        self.assertLess(spans[1][0], spans[0][1])  # sobrepõem de verdade
+
+    def test_partial_overlap(self):
+        words = [W(" isso", 10.0, 10.4), W(" é", 10.4, 10.8),
+                 W(" não", 10.5, 10.7)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 2)
+        self.assertTrue(any(c[2] == "NÃO" for c in cues))
+
+    def test_full_overlap(self):
+        words = [W(" sim", 10.0, 11.0), W(" não", 10.0, 11.0)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 2)
+
+    def test_three_simultaneous(self):
+        words = [W(" um", 10.0, 11.0), W(" dois", 10.1, 10.9),
+                 W(" três", 10.2, 10.8)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 3)
+
+    def test_no_overlap_single_sequence(self):
+        words = [W(" olhe", 10.0, 10.3), W(" para", 10.4, 10.8)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0][2], "OLHE PARA")
+
+    def test_touching_words_stay_sequential(self):
+        words = [W(" dire", 10.0, 10.5), W("ita", 10.5, 10.9)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 1)
+        self.assertEqual(cues[0][2], "DIREITA")
+
+    def test_consecutive_no_overlap(self):
+        words = [W(" foi", 10.0, 10.3), W(" embora", 11.0, 11.4)]
+        cues = _group_cues(words, 0.0, 30.0)
+        self.assertEqual(len(cues), 2)
+        self.assertLessEqual(cues[0][1], cues[1][0] + 1e-6)
+
+    def test_timestamps_preserved(self):
+        words = [W(" EU", 10.0, 10.5), W(" VOU", 10.5, 11.0),
+                 W(" NÃO", 10.2, 10.5), W(" VAI", 10.5, 10.8)]
+        cues = _group_cues(words, 0.0, 30.0)
+        for s, e, _ in cues:
+            self.assertGreater(e, s)
+
+    def test_srt_keeps_both_overlapping(self):
+        words = [W(" EU", 10.0, 10.5), W(" NÃO", 10.2, 10.8)]
+        srt = build_srt(words, 0.0, 30.0)
+        self.assertIn("EU", srt)
+        self.assertIn("NÃO", srt)
+        parsed = parse_cues(srt)
+        self.assertEqual(len(parsed), 2)
+        self.assertLess(parsed[1][0], parsed[0][1])
+
+
 if __name__ == "__main__":
     unittest.main()

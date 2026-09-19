@@ -178,56 +178,96 @@ def valid_caption_words(words: list) -> list:
     return [w for w in (words or []) if not is_degenerate_word(w)]
 
 
+# Piso de ruído para simultaneidade: overlaps <= 0.1s são jitter de medição
+# (quantização do Whisper ~10ms; medido 0 overlaps incidentais nos transcripts
+# reais) e seguem sequenciais; acima disso, vozes concorrentes. Calibrado,
+# documentado, testado — não é palpite.
+VOICE_OVERLAP_MIN = 0.1
+
+
+def _split_voices(words: list) -> list[list]:
+    """Particiona words ordenadas em vozes concorrentes (puro e testável).
+
+    Cada word entra na primeira voz cujo fim <= seu início (menos o piso);
+    senão abre nova voz. Ordenação estável SÓ por start: em empates, vale a
+    ordem de emissão do Whisper (tokens saem em ordem de decodificação, que
+    acompanha os turnos percebidos) — sem isso, o desempate seria arbitrário.
+    Timestamps intocados; sem labels de speaker.
+    """
+    ordered = sorted(words, key=lambda w: w.start)  # estável: preserva emissão
+    voices: list[list] = []
+    for w in ordered:
+        placed = False
+        for v in voices:
+            if w.start >= v[-1].end - VOICE_OVERLAP_MIN:
+                v.append(w)
+                placed = True
+                break
+        if not placed:
+            voices.append([w])
+    return voices
+
+
 def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[list]:
     """Núcleo compartilhado: agrupa objetos Word em cues (listas de Word).
 
     Usado por _group_cues() e pela auditoria WORD→CUE do debug. A regra de
-    quebra (gap > 0.4s, pontuação, 8 words, 48 chars) vive só aqui, com uma
-    restrição estrutural: a quebra só acontece em FRONTEIRA de palavra. Um
-    token de continuação (sem espaço à esquerda, ex: "ita" em "dire"+"ita")
-    nunca inicia cue — sem isso, um gap do Whisper no meio da palavra gerava
-    "DIRE" / "ITA" em cues separadas. Em lotes sem fronteiras (estilo
-    faster-whisper), o comportamento é o histórico.
+    quebra (gap > 0.4s, pontuação, 8 words, 48 chars) vive só aqui, com duas
+    restrições estruturais:
+    1. Quebra só em FRONTEIRA de palavra: token de continuação (sem espaço à
+       esquerda, ex: "ita" em "dire"+"ita") nunca inicia cue.
+    2. Falas SIMULTÂNEAS nunca são serializadas: words com overlap real
+       (> VOICE_OVERLAP_MIN) formam vozes concorrentes, cada uma agrupada
+       separadamente. Sem diarização não há nomes de pessoas — só cues
+       coexistentes com timestamps preservados (lanes resolvem a exibição).
     """
     words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
     has_boundaries = any(w.text[:1].isspace() for w in words if w.text)
-    cues: list[list] = []
-    cur: list = []
-
-    def flush():
-        if cur:
-            cues.append(list(cur))
-            cur.clear()
 
     def is_continuation(w) -> bool:
         return has_boundaries and not (w.text[:1].isspace() if w.text else True)
 
-    i = 0
-    n = len(words)
-    while i < n:
-        w = words[i]
-        cur.append(w)
-        nxt = words[i + 1] if i + 1 < n else None
-        if nxt is None:
-            flush()
-            break
-        gap = nxt.start - w.end
-        ends = w.text.strip()[-1] in ".!?" if w.text.strip() else False
-        should = (
-            gap > CAPTION_PAUSE_THRESHOLD
-            or (ends and len(cur) >= 2)
-            or len(cur) >= 8
-            or len(" ".join(x.text for x in cur)) > CAPTION_MAX_CHARS_PER_LINE * CAPTION_MAX_LINES_PER_CUE
-        )
-        if should:
-            # A pausa/limite é real, mas a palavra não pode partir: TODAS as
-            # continuações seguintes fecham o grupo atual; a quebra vale dali.
-            while i + 1 < n and is_continuation(words[i + 1]):
-                i += 1
-                cur.append(words[i])
-            flush()
-        i += 1
+    def group_voice(voice: list) -> list[list]:
+        out: list[list] = []
+        cur: list = []
+
+        def flush():
+            if cur:
+                out.append(list(cur))
+                cur.clear()
+
+        i, n = 0, len(voice)
+        while i < n:
+            w = voice[i]
+            cur.append(w)
+            nxt = voice[i + 1] if i + 1 < n else None
+            if nxt is None:
+                flush()
+                break
+            gap = nxt.start - w.end
+            ends = w.text.strip()[-1] in ".!?" if w.text.strip() else False
+            should = (
+                gap > CAPTION_PAUSE_THRESHOLD
+                or (ends and len(cur) >= 2)
+                or len(cur) >= 8
+                or len(" ".join(x.text for x in cur)) > CAPTION_MAX_CHARS_PER_LINE * CAPTION_MAX_LINES_PER_CUE
+            )
+            if should:
+                # A pausa/limite é real, mas a palavra não pode partir: TODAS
+                # as continuações seguintes fecham o grupo atual; a quebra
+                # vale dali.
+                while i + 1 < n and is_continuation(voice[i + 1]):
+                    i += 1
+                    cur.append(voice[i])
+                flush()
+            i += 1
+        return out
+
+    cues: list[list] = []
+    for voice in _split_voices(words):
+        cues.extend(group_voice(voice))
+    cues.sort(key=lambda g: (g[0].start, g[-1].end))
     return cues
 
 
