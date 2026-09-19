@@ -268,14 +268,17 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 - **Legendas (sync/tokens/estilo)**: tempos absoluto→relativo com clamp em
   `[0, duração]` + validação matemática (avisos no log); corte usa
   `trim`+`setpts` (o `-ss` após `-i` deslocava legendas em `-fine`);
-  tokens `[eot]/[sot]/...` filtrados na origem; ASS com `PlayRes` = frame real,
-  Montserrat ExtraBold 54 px na base. Timestamps do próprio Whisper têm jitter
-  natural (~0,5 s, pior em áudio estourado) — medição de viés por energia é
-  inviável nesse áudio; sem offset.
+  tokens `[eot]/[sot]/...` filtrados na origem; words degenerados
+  (`end <= start`, alucinação pós-fala do Whisper+VAD) descartados antes do
+  agrupamento; extensão visual de 1,0 s nunca invade a próxima cue (só a
+  parte artificial é cortada, span real preservado); ASS com `PlayRes` =
+  frame real, Montserrat ExtraBold 54 px na base. Timestamps do próprio
+  Whisper têm jitter natural (~0,5 s, VAD tende a adiantar ~0,3–0,7 s no
+  áudio limpo medido; chunking altera ~0,01–0,02 s) — sem offset global.
 - **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
   na TUI) preserva por clipe `captions.ass`, `captions.srt`,
-  `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem) em
-  `debug/`, mais `transcript.txt` legível do vídeo. Testes:
+  `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem +
+  auditoria WORD→CUE) em `debug/`, mais `transcript.txt` legível do vídeo. Testes:
   `python -m unittest discover -s tests`.
 - **Sem candidatos?** Vídeo sem fala (ou VAD removeu tudo) — `segments: 0`.
 - **Disco?** Preflight falha com < 1 GB livre, avisa com < 5 GB.

@@ -178,16 +178,11 @@ def valid_caption_words(words: list) -> list:
     return [w for w in (words or []) if not is_degenerate_word(w)]
 
 
-def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
-    """Agrupa palavras em cues (s_abs, e_abs, texto_limpo). Puro e testável.
+def _group_cue_words(words: list, clip_start: float, clip_end: float) -> list[list]:
+    """Núcleo compartilhado: agrupa objetos Word em cues (listas de Word).
 
-    Mesmas garantias do build_srt: só palavras dentro do corte, texto limpo,
-    sem cues vazias. Tempos ainda ABSOLUTOS; a conversão p/ relativo é feita
-    pelo formatador (SRT/ASS) subtraindo clip_start de forma determinística.
-    Words degenerados (end <= start, ex: VAD 20.760→20.760) são descartados
-    aqui — ponto único de filtragem (cobre SRT, ASS e debug, inclusive
-    transcripts em cache) — para que o fallback CAPTION_MIN_DURATION nunca
-    transforme timestamp inválido em cue artificial de 1.0s.
+    Usado por _group_cues() e pela auditoria WORD→CUE do debug. A regra de
+    quebra (gap > 0.4s, pontuação, 8 words, 48 chars) vive só aqui.
     """
     words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
@@ -217,29 +212,62 @@ def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
                 should = True
         if should:
             flush()
+    return cues
 
-    out: list[tuple] = []
-    for chunk_words in cues:
+
+def _group_cues(words: list, clip_start: float, clip_end: float) -> list[tuple]:
+    """Agrupa palavras em cues (s_abs, e_abs, texto_limpo). Puro e testável.
+
+    Mesmas garantias do build_srt: só palavras dentro do corte, texto limpo,
+    sem cues vazias. Tempos ainda ABSOLUTOS; a conversão p/ relativo é feita
+    pelo formatador (SRT/ASS) subtraindo clip_start de forma determinística.
+    Words degenerados (end <= start, ex: VAD 20.760→20.760) são descartados
+    aqui — ponto único de filtragem (cobre SRT, ASS e debug, inclusive
+    transcripts em cache) — para que o fallback CAPTION_MIN_DURATION nunca
+    transforme timestamp inválido em cue artificial de 1.0s.
+    A extensão visual (dur < 1.0s → 1.0s) nunca invade a próxima cue: só a
+    parte artificial é cortada (fim==início não é overlap); o span real das
+    words nunca é reduzido (overlap real do Whisper é preservado; lanes
+    resolvem a exibição).
+    """
+    out: list[list] = []
+    for chunk_words in _group_cue_words(words, clip_start, clip_end):
         if not chunk_words:
             continue
         s = chunk_words[0].start
-        e = chunk_words[-1].end
+        e_real = chunk_words[-1].end
+        e = e_real
         if e <= s:
             e = s + CAPTION_MIN_DURATION
         if e - s < CAPTION_MIN_DURATION:
             e = s + CAPTION_MIN_DURATION
         raw = clean_caption_text(smart_join([w.text for w in chunk_words])).upper()
         if raw:
-            out.append((s, e, raw))
-    return out
+            out.append([s, e, raw, e_real])
+    for i in range(len(out) - 1):
+        s, e, raw, e_real = out[i]
+        s_next = out[i + 1][0]
+        if e > e_real + 1e-9 and e > s_next:
+            out[i][1] = max(e_real, s_next)
+    return [(s, e, raw) for s, e, raw, _ in out]
 
 
 def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[tuple]:
-    """Divide cues longas em (cs_rel, ce_rel, texto) já relativos e clampados."""
+    """Divide cues longas em (cs_rel, ce_rel, texto) já relativos e clampados.
+
+    O piso visual (dur < 1.0s → 1.0s) nunca invade a próxima cue — mesma
+    regra do _group_cues, aplicada na timeline relativa (o clamp absoluto
+    poderia ser re-estendido aqui pelo max()).
+    """
     out: list[tuple] = []
-    for s_abs, e_abs, raw in cues:
+    for idx, (s_abs, e_abs, raw) in enumerate(cues):
         s = max(0.0, s_abs - clip_start)
-        e = min(duration, max(e_abs - clip_start, s + CAPTION_MIN_DURATION))
+        e_real = e_abs - clip_start
+        e = min(duration, max(e_real, s + CAPTION_MIN_DURATION))
+        if e > e_real + 1e-9 and idx + 1 < len(cues):
+            s_next = max(0.0, cues[idx + 1][0] - clip_start)
+            if e > s_next:
+                e = max(e_real, s_next)
         if e <= s:
             continue
         wrapped = _wrap(raw)
@@ -644,6 +672,25 @@ def render_caption_debug(clip_name: str, clip_start: float, clip_end: float,
     for w in dropped:
         L += [f'DROPPED DEGENERATE WORD: text={w.text.strip()!r} '
               f'start={w.start:.3f} end={w.end:.3f} reason=end <= start']
+    L += ["", "AUDITORIA WORD→CUE (absoluto | relativo ao clip | duração)"]
+    groups = _group_cue_words(words, clip_start, clip_end)
+    abs_cues = _group_cues(words, clip_start, clip_end)
+    duration = max(0.0, clip_end - clip_start)
+    for i, gw in enumerate(groups):
+        if i < len(abs_cues):
+            s_abs, e_abs, raw = abs_cues[i]
+        else:
+            s_abs, e_abs, raw = (gw[0].start, gw[-1].end, "?") if gw else (0, 0, "?")
+        rs = max(0.0, s_abs - clip_start)
+        re_ = min(duration, e_abs - clip_start) if duration > 0 else e_abs - clip_start
+        flat = (raw or "").replace("\n", " / ")
+        L.append(f"Cue {i:02d} abs {s_abs:.3f}→{e_abs:.3f} "
+                 f"rel {rs:.3f}→{re_:.3f} dur {re_ - rs:.3f} {flat!r}")
+        for w in gw:
+            L.append(f"    {w.text.strip()!r:14} {w.start:.3f}→{w.end:.3f}")
+        first_ok = abs(gw[0].start - s_abs) < 1e-6 if gw else False
+        L.append(f"    status: {'OK' if first_ok else 'DIVERGENTE'} "
+                 f"(cue começa na primeira word: {first_ok})")
     L += ["", "CHECAGEM FINAL"]
     if not warnings:
         L.append("OK: sem divergências (rel>=0, fim> início, dentro da duração).")

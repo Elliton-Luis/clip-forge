@@ -420,5 +420,47 @@ class TestDegenerateWords(unittest.TestCase):
         self.assertIn("20.760", txt)
 
 
+class TestMinDurationClamp(unittest.TestCase):
+    """Extensão visual 1.0s nunca invade a próxima cue; span real intocado."""
+
+    def test_extension_clamped_before_next_cue(self):
+        words = [W("ah", 10.0, 10.1), W("vamos", 10.5, 11.0)]
+        cues = parse_cues(build_srt(words, 0.0, 30.0))
+        self.assertEqual(len(cues), 2)
+        self.assertAlmostEqual(cues[0][0], 10.0, places=2)
+        self.assertLessEqual(cues[0][1], cues[1][0] + 1e-6)
+        self.assertGreaterEqual(cues[0][1], 10.1 - 1e-6)  # span real preservado
+
+    def test_real_duration_never_reduced(self):
+        words = [W("fala", 10.0, 10.5), W("longa", 10.6, 12.5)]
+        cues = parse_cues(build_srt(words, 0.0, 30.0))
+        self.assertTrue(cues)
+        self.assertAlmostEqual(cues[-1][1], 12.5, places=2)
+
+    def test_real_whisper_overlap_preserved(self):
+        # 8 words forçam split com overlap real (fim real além do próximo início).
+        words = [W(f"w{i}", 10.0 + i * 0.1, 10.0 + i * 0.1 + 1.0) for i in range(10)]
+        cues = parse_cues(build_srt(words, 0.0, 30.0))
+        self.assertGreaterEqual(len(cues), 2)
+        # fim real 11.7 da cue 0 além do início da cue 1 → verdade preservada
+        self.assertGreater(cues[0][1], cues[1][0] - 1e-6)
+
+    def test_no_overlap_in_real_clips(self):
+        import json
+        data = json.load(open("metrics_test/whisper_raw_words.json"))
+        words = [W(w["text"], w["start_abs"], w["end_abs"]) for w in data]
+        cues = parse_cues(build_srt(words, 0.0, 31.21))
+        for i in range(len(cues) - 1):
+            self.assertLessEqual(cues[i][1], cues[i + 1][0] + 1e-6)
+
+    def test_audit_word_to_cue_present(self):
+        words = [W("olhe", 10.0, 10.3), W("vaso", 14.5, 15.0)]
+        cues = [(10.0, 10.3, "OLHE"), (14.5, 15.0, "VASO")]
+        txt = render_caption_debug("c", 0.0, 30.0, words, cues, [])
+        self.assertIn("AUDITORIA WORD→CUE", txt)
+        self.assertIn("Cue 00", txt)
+        self.assertIn("status: OK", txt)
+
+
 if __name__ == "__main__":
     unittest.main()
