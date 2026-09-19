@@ -46,6 +46,17 @@ class TestBuildRange(unittest.TestCase):
         with self.assertRaises(ValueError):
             build(segs_spans([(0, 30)]), min_dur=60, max_dur=20)
 
+    def test_build_caps_at_media_end(self):
+        # Overshoot do decoder: segmento termina em 60 num vídeo de 45.14.
+        segs = segs_spans([(0, 30), (30, 60)])
+        for c in build(segs, min_dur=20, max_dur=40, media_end=45.14):
+            self.assertLessEqual(c.end, 45.14)
+
+    def test_build_without_media_end_unchanged(self):
+        segs = segs_spans([(0, 30), (30, 60)])
+        self.assertTrue(any(c.end > 45.14
+                            for c in build(segs, min_dur=20, max_dur=40)))
+
 
 class TestSnapRange(unittest.TestCase):
     def test_below_min_expands(self):
@@ -87,6 +98,20 @@ class TestSnapRange(unittest.TestCase):
         _snap_one(c, pad=0, min_dur=20, max_dur=60, media_end=15)
         self.assertLessEqual(c.duration, 15)
         self.assertLessEqual(c.duration, 60)
+
+    def test_snap_caps_end_at_media_end(self):
+        # Caso real: janela [29.2, 60.8] em vídeo de 45.14s.
+        c = cand(29.2, 60.8)
+        _snap_one(c, pad=0.8, min_dur=20, max_dur=40, media_end=45.14)
+        self.assertLessEqual(c.end, 45.14)
+        self.assertGreaterEqual(c.start, 0)
+        self.assertGreaterEqual(c.duration, 0)
+
+    def test_snap_fully_outside_collapses_safely(self):
+        c = cand(50, 60)
+        _snap_one(c, pad=0.8, min_dur=20, max_dur=40, media_end=45.14)
+        self.assertLessEqual(c.end, 45.14)
+        self.assertGreaterEqual(c.duration, 0)
 
     def test_exact_boundaries_kept(self):
         c = cand(10, 30)  # exatamente min

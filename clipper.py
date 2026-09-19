@@ -422,15 +422,17 @@ def run_pipeline(cfg: dict) -> None:
                 segments = _pause_for_transcript_review(cfg, video, segments)
         stage = "candidates"
         with metrics.stage("candidates"):
+            from core.backends import probe_duration as _probe
+            media_end = _probe(video)
             candidates = build_candidates(segments, min_dur=cfg["min_duration"],
-                                          max_dur=cfg["max_duration"])
+                                          max_dur=cfg["max_duration"],
+                                          media_end=media_end)
             if not candidates:
                 sys.exit("Nenhum candidato encontrado (vídeo sem fala?).")
-            from core.backends import probe_duration as _probe
             candidates = snap_all(candidates, pad=cfg["pad"],
                                   min_dur=cfg["min_duration"],
                                   max_dur=cfg["max_duration"],
-                                  media_end=_probe(video))
+                                  media_end=media_end)
         metrics.set_counts(candidates=len(candidates))
 
         stage = "audio"

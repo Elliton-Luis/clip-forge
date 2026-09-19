@@ -10,9 +10,14 @@ from .config import (
 
 
 def build(segments: list, min_dur: float = MIN_CLIP_SECONDS,
-          max_dur: float = MAX_CLIP_SECONDS) -> list[Candidate]:
+          max_dur: float = MAX_CLIP_SECONDS,
+          media_end: float | None = None) -> list[Candidate]:
     """Janelas deslizantes de [min_dur, max_dur]. MAX é teto real: nenhuma
-    janela nasce maior que max_dur (o --pad também nunca estoura, ver _snap_one)."""
+    janela nasce maior que max_dur (o --pad também nunca estoura, ver _snap_one).
+    media_end (duração real da mídia, quando conhecida): janelas nunca passam
+    dele — bounds de segmento do Whisper podem extrapolar o áudio (decoder
+    overshoot), mas clip não pode existir fora do vídeo.
+    """
     if not (0 < min_dur <= max_dur):
         raise ValueError(f"range inválido: min={min_dur} max={max_dur} (exige 0 < min <= max)")
     if not segments:
@@ -30,6 +35,8 @@ def build(segments: list, min_dur: float = MIN_CLIP_SECONDS,
         while j < n - 1 and (segments[j + 1].end - start_time) <= max_dur:
             j += 1
             end_time = segments[j].end
+        if media_end is not None:
+            end_time = min(end_time, media_end)
 
         if end_time - start_time >= min_dur:
             words, texts = [], []
@@ -75,6 +82,11 @@ def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS,
     snapped_end = best_end + pad
     if snapped_end <= snapped_start:
         snapped_end = snapped_start + 1.0
+    # Fora da mídia não existe clip: fim nunca passa de media_end (bounds de
+    # segmento do Whisper podem extrapolar o áudio real — overshoot do decoder).
+    if media_end is not None:
+        snapped_start = min(snapped_start, media_end)
+        snapped_end = min(snapped_end, media_end)
     # --pad nunca quebra MAX: corta o excesso do fim (início já é snap+pad).
     if snapped_end - snapped_start > max_dur:
         snapped_end = snapped_start + max_dur
