@@ -10,10 +10,11 @@ from .models import Word, Segment
 from .config import WHISPER_MODEL_SIZE, WHISPER_LANGUAGE
 
 
-def fingerprint(video_path: str) -> str:
+def fingerprint(video_path: str, model_size: str | None = None) -> str:
     st = os.stat(video_path)
     lang = WHISPER_LANGUAGE or "auto"
-    raw = f"{Path(video_path).resolve()}|{st.st_size}|{int(st.st_mtime)}|{WHISPER_MODEL_SIZE}|{lang}"
+    model = model_size or WHISPER_MODEL_SIZE
+    raw = f"{Path(video_path).resolve()}|{st.st_size}|{int(st.st_mtime)}|{model}|{lang}"
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 

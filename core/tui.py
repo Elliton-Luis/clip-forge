@@ -146,6 +146,11 @@ def validate_for_run(cfg: dict) -> list[str]:
         errs.append("Modelo inválido (vazio)")
     if cfg.get("transcribe_backend") not in ("auto", "gpu", "vulkan", "openvino", "cpu"):
         errs.append("Backend de transcrição inválido")
+    try:
+        from core.translab import resolve_model as _resolve_model
+        _resolve_model(cfg.get("whisper_model") or "medium")
+    except RuntimeError as e:
+        errs.append(f"Modelo Whisper inválido: {e}")
     return errs
 
 
@@ -155,6 +160,7 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         ("Saída", cfg.get("out") or "cortes/"),
         ("Modelo", model_name or cfg.get("model") or "—"),
         ("Transcrição", cfg.get("transcribe_backend") or "auto"),
+        ("Whisper", cfg.get("whisper_model") or "medium"),
         ("Clipes", str(cfg.get("top"))),
         ("Score mínimo", str(cfg.get("min_score"))),
         ("Padding", f"{cfg.get('pad')}s"),
@@ -238,6 +244,7 @@ class TUI:
             ("out", "Pasta de saída", "text"),
             ("model", "Modelo de scoring", "model"),
             ("transcribe_backend", "Backend de transcrição", "backend"),
+            ("whisper_model", "Modelo Whisper (ex: medium, large-v3)", "text"),
             ("top", "Quantidade de clipes", "int"),
             ("min_score", "Score mínimo (0–10)", "float"),
             ("pad", "Padding em segundos (0–5)", "float"),

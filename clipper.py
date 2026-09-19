@@ -76,6 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["auto", "gpu", "vulkan", "openvino", "cpu"],
                    help="Backend de transcrição (padrão: env CLIPPER_TRANSCRIBE_BACKEND ou auto; "
                         "'gpu' exige GPU e falha claramente se indisponível)")
+    p.add_argument("--whisper-model", default=WHISPER_MODEL_SIZE,
+                   help=f"Modelo Whisper ggml-* em models/ (padrão: {WHISPER_MODEL_SIZE}; "
+                        f"large-v3 p/ força máxima com PC em repouso)")
     p.add_argument("--debug-captions", action="store_true",
                    help="Diagnóstico de legendas: preserva ASS/SRT/transcript/diagnóstico em debug/")
     p.add_argument("--review-transcript", action="store_true",
@@ -99,7 +102,7 @@ def parse_cli(argv=None):
 
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
-    "acoustic_captions",
+    "acoustic_captions", "whisper_model",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
@@ -126,6 +129,7 @@ def config_from_args(args) -> dict:
         "no_vertical": bool(args.no_vertical),
         "no_captions": bool(args.no_captions),
         "acoustic_captions": bool(args.acoustic_captions),
+        "whisper_model": args.whisper_model,
         "cache_dir": args.cache_dir,
         "force_retranscribe": bool(args.force_retranscribe),
         "force_rescore": bool(args.force_rescore),
@@ -160,6 +164,11 @@ def validate_config(cfg: dict) -> None:
         sys.exit("--max-per-10min deve estar entre 1 e 20")
     if not (0 < cfg["min_duration"] <= cfg["max_duration"] <= 600):
         sys.exit("--min-duration/--max-duration exigem 0 < min <= max <= 600")
+    try:
+        from core.translab import resolve_model as _resolve_model
+        _resolve_model(cfg.get("whisper_model") or WHISPER_MODEL_SIZE)
+    except RuntimeError as e:
+        sys.exit(f"--whisper-model inválido: {e}")
 
 
 def cli_command(cfg: dict) -> str:
@@ -176,6 +185,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-captions")
     if cfg.get("acoustic_captions"):
         parts.append("--acoustic-captions")
+    if cfg.get("whisper_model") != WHISPER_MODEL_SIZE:
+        parts += ["--whisper-model", cfg["whisper_model"]]
     if cfg["cache_dir"]:
         parts += ["--cache-dir", cfg["cache_dir"]]
     if cfg["force_retranscribe"]:
@@ -371,7 +382,7 @@ def run_pipeline(cfg: dict) -> None:
     # Métricas por execução: um relatório JSON por vídeo, mesmo em falha.
     run_args = {
         "top": cfg["top"], "model": cfg["model"], "transcribe_backend": cfg["transcribe_backend"],
-        "whisper_model": WHISPER_MODEL_SIZE, "cpu_threads": CLIPPER_CPU_THREADS,
+        "whisper_model": cfg["whisper_model"], "cpu_threads": CLIPPER_CPU_THREADS,
         "ffmpeg_threads": CLIPPER_FFMPEG_THREADS, "pad": cfg["pad"],
         "min_duration": cfg["min_duration"], "max_duration": cfg["max_duration"],
         "min_score": cfg["min_score"], "max_per_10min": cfg["max_per_10min"],
@@ -385,7 +396,7 @@ def run_pipeline(cfg: dict) -> None:
             preflight(video, out_dir, cfg["top"], transcribe_backend=cfg["transcribe_backend"])
 
         cache_dir = Path(cfg["cache_dir"]).expanduser() if cfg["cache_dir"] else None
-        fp = fingerprint(video) if cache_dir else None
+        fp = fingerprint(video, cfg["whisper_model"]) if cache_dir else None
 
         stage = "transcribe"
         with metrics.stage("transcribe"):
@@ -405,7 +416,8 @@ def run_pipeline(cfg: dict) -> None:
                     pass
             else:
                 segments = transcribe(video, cache_dir=cache_dir, force=cfg["force_retranscribe"],
-                                      backend=cfg["transcribe_backend"], metrics=metrics)
+                                      backend=cfg["transcribe_backend"], metrics=metrics,
+                                      model_size=cfg["whisper_model"])
             if cfg.get("review_transcript") and not cfg.get("work_dir"):
                 segments = _pause_for_transcript_review(cfg, video, segments)
         stage = "candidates"

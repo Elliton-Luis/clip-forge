@@ -31,17 +31,17 @@ def _apply_process_limits() -> None:
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(CLIPPER_CPU_THREADS))
 
 
-def _transcribe_cpu(video_path: str) -> list[Segment]:
+def _transcribe_cpu(video_path: str, model_size: str) -> list[Segment]:
     from faster_whisper import WhisperModel  # import tardio (pesado)
 
-    print(f"[1/5] Transcrevendo com faster-whisper ({WHISPER_MODEL_SIZE}, "
+    print(f"[1/5] Transcrevendo com faster-whisper ({model_size}, "
           f"device={CLIPPER_DEVICE}, compute={CLIPPER_COMPUTE_TYPE}, "
           f"threads={CLIPPER_CPU_THREADS}, ram_limit={CLIPPER_RAM_LIMIT_GB}GB) — CPU fallback")
     ctype = CLIPPER_COMPUTE_TYPE
     if CLIPPER_DEVICE == "cpu" and ctype not in ("int8", "int8_float16", "float32", "int8_float32"):
         print("   ! compute_type inválido p/ CPU, forçando int8")
         ctype = "int8"
-    model = WhisperModel(WHISPER_MODEL_SIZE, device=CLIPPER_DEVICE, compute_type=ctype,
+    model = WhisperModel(model_size, device=CLIPPER_DEVICE, compute_type=ctype,
                          cpu_threads=CLIPPER_CPU_THREADS, num_workers=1)
     raw_segments, info = model.transcribe(
         # Sem VAD também no fallback CPU: mesma evidência do caminho Vulkan
@@ -59,8 +59,10 @@ def _transcribe_cpu(video_path: str) -> list[Segment]:
 
 
 def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = False,
-               backend: str | None = None, metrics=None) -> list[Segment]:
-    fp = fingerprint(video_path) if cache_dir else None
+               backend: str | None = None, metrics=None,
+               model_size: str | None = None) -> list[Segment]:
+    ms = model_size or WHISPER_MODEL_SIZE
+    fp = fingerprint(video_path, ms) if cache_dir else None
     if cache_dir and not force and fp:
         cached = load_transcript(cache_dir, fp)
         if cached is not None:
@@ -69,7 +71,7 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
                     from . import intel as _intel
                     _d = _intel.describe(backend or CLIPPER_TRANSCRIBE_BACKEND)
                     metrics.set_transcription(
-                        model=WHISPER_MODEL_SIZE,
+                        model=ms,
                         backend_requested=(backend or CLIPPER_TRANSCRIBE_BACKEND),
                         backend_used="cache", device=CLIPPER_DEVICE,
                         gpu=_d.get("gpu_name") or None,
@@ -98,7 +100,7 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
         if metrics is not None:
             try:
                 metrics.set_transcription(
-                    model=WHISPER_MODEL_SIZE, backend_requested=requested,
+                    model=ms, backend_requested=requested,
                     backend_used=None, device=None, gpu=info.get("gpu_name") or None,
                     time_sec=0.0, segments=None, fallback=False,
                     tried_backends=[], error=f"RuntimeError: {err}",
@@ -126,13 +128,13 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
             if b == "vulkan":
                 print("[1/5] Transcrevendo com whisper.cpp (Vulkan, B580)...")
                 segments = gpu_backends.transcribe_vulkan(
-                    video_path, model_size=WHISPER_MODEL_SIZE, language=WHISPER_LANGUAGE)
+                    video_path, model_size=ms, language=WHISPER_LANGUAGE)
             elif b == "openvino":
                 print("[1/5] Transcrevendo com OpenVINO (device GPU, B580)...")
                 segments = gpu_backends.transcribe_openvino(
-                    video_path, model_size=WHISPER_MODEL_SIZE, language=WHISPER_LANGUAGE)
+                    video_path, model_size=ms, language=WHISPER_LANGUAGE)
             else:
-                segments = _transcribe_cpu(video_path)
+                segments = _transcribe_cpu(video_path, ms)
         except RuntimeError as e:
             last_err = f"{type(e).__name__}: {e}"
             print(f"GPU transcription backend unavailable: {e}")
@@ -144,7 +146,7 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
                 if metrics is not None:
                     try:
                         metrics.set_transcription(
-                            model=WHISPER_MODEL_SIZE, backend_requested=requested,
+                            model=ms, backend_requested=requested,
                             backend_used=None, device=CLIPPER_DEVICE,
                             gpu=info.get("gpu_name") or None,
                             time_sec=round(time.time() - t0, 3), segments=None,
@@ -161,7 +163,7 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
         if metrics is not None:
             try:
                 metrics.set_transcription(
-                    model=WHISPER_MODEL_SIZE, backend_requested=requested,
+                    model=ms, backend_requested=requested,
                     backend_used=b, device="GPU" if b in ("vulkan", "openvino") else CLIPPER_DEVICE,
                     gpu=info.get("gpu_name") or None,
                     time_sec=round(time.time() - t0, 3), segments=len(segments),
