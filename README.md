@@ -84,7 +84,8 @@ cortes/
 python clipper.py        # sem argumentos abre a TUI
 ```
 
-Menu: **Processar vídeo** · **Ver último relatório** · **Última transcrição** · **Sair**.
+Menu: **Processar vídeo** · **Revisar transcrição** · **Aprovar transcrição** ·
+**Finalizar sessão** · **Ver último relatório** · **Última transcrição** · **Sair**.
 Navegação: setas movem, `←→`/Espaço altera opções e checkboxes, Enter edita
 campos de texto ou confirma, Esc cancela. Só usa `curses` (stdlib, sem
 dependência nova); sem terminal compatível, a CLI continua funcionando.
@@ -256,8 +257,10 @@ palavra inteira após transcrever (whisper.cpp não tem prompting de vocabulári
 o mecanismo é pós-processamento exato e registrado). Títulos com palavras fora
 da transcrição aprovada geram `title_warnings` no manifest em vez de passarem
 silenciosamente (o prompt do scoring também exige título-recorte fiel). Na TUI,
-as mesmas opções são checkboxes. `work/` é intermediário (ignorado no git);
-`finalize` recusa sessão não aprovada e guarda `approved-transcript.json` no out.
+as mesmas opções são checkboxes, e o menu tem **Revisar/Aprovar/Finalizar**
+operando sobre `work/` sem flags (a edição abre seu `$EDITOR`). `work/` é
+intermediário (ignorado no git); `finalize` recusa sessão não aprovada e guarda
+`approved-transcript.json` no out.
 
 ## Métricas e cache
 

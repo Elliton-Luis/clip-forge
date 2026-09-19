@@ -189,6 +189,26 @@ class TestDiscovery(unittest.TestCase):
             self.assertIsNone(latest_report(d))
             self.assertIsNone(latest_transcript(d))
 
+    def test_list_sessions(self):
+        import json
+        import tempfile
+        from core.tui import list_sessions
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(list_sessions(d), [])
+            s = Path(d, "Live") / "transcription"
+            s.mkdir(parents=True)
+            (s / "transcript.json").write_text(json.dumps({
+                "status": "approved",
+                "segments": [{"text": "oi", "start": 0, "end": 1,
+                              "words": [{"text": "oi", "start": 0, "end": 1},
+                                        {"text": "x", "start": 1, "end": 2}]}]}))
+            (Path(d) / "vazia").mkdir()
+            got = list_sessions(d)
+            self.assertEqual(len(got), 1)  # dir sem transcript.json ignorado
+            self.assertEqual(got[0]["name"], "Live")
+            self.assertEqual(got[0]["status"], "approved")
+            self.assertEqual(got[0]["words"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,30 @@ def latest_transcript(cache_dir: str | Path = ".cache/clipper") -> Path | None:
     return files[0] if files else None
 
 
+def list_sessions(work_root: str | Path = "work") -> list[dict]:
+    """Sessões de revisão em work/<video>/transcription. Puro e testável."""
+    root = Path(work_root).expanduser()
+    if not root.is_dir():
+        return []
+    out = []
+    for d in sorted(root.iterdir()):
+        t = d / "transcription" / "transcript.json"
+        if not (d.is_dir() and t.exists()):
+            continue
+        try:
+            import json as _j
+            data = _j.loads(t.read_text(encoding="utf-8"))
+            segs = data.get("segments", [])
+            n_words = sum(len(s.get("words", [])) for s in segs)
+            status = data.get("status", "draft")
+        except (OSError, ValueError):
+            status, n_words = "corrompida", 0
+        out.append({"name": d.name, "dir": str(d), "status": status,
+                    "segments": len(segs) if isinstance(segs, list) else 0,
+                    "words": n_words})
+    return out
+
+
 def validate_for_run(cfg: dict) -> list[str]:
     """Validação completa antes de executar. Retorna lista de erros (vazia = ok)."""
     errs = []
@@ -423,7 +447,8 @@ class TUI:
                 return True
 
     def menu(self):
-        items = ["Processar vídeo", "Ver último relatório",
+        items = ["Processar vídeo", "Revisar transcrição", "Aprovar transcrição",
+                 "Finalizar sessão", "Ver último relatório",
                  "Última transcrição", "Sair"]
         pos = 0
         while True:
@@ -478,6 +503,131 @@ class TUI:
             elif ch == curses.KEY_DOWN:
                 top = min(max(0, len(lines) - (h - 2)), top + 1)
 
+    # -- revisão de transcrição (opera sobre work/, sem flags) --
+    def pick_session(self) -> dict | None:
+        sessions = list_sessions("work")
+        if not sessions:
+            self.notice("Nenhuma sessão em work/ (processe com [x] Revisar transcrição).")
+            return None
+        pos = 0
+        while True:
+            s = self.stdscr
+            s.clear()
+            h, w = s.getmaxyx()
+            s.addstr(0, 2, "SESSÕES (work/)", curses.A_BOLD)
+            for i, sess in enumerate(sessions):
+                row = 2 + i
+                if row >= h - 2:
+                    break
+                line = (f"> {sess['name']} [{sess['status']}] "
+                        f"{sess['segments']} seg/{sess['words']} words" if i == pos
+                        else f"  {sess['name']} [{sess['status']}] "
+                        f"{sess['segments']} seg/{sess['words']} words")
+                s.addstr(row, 4, line[:w - 6],
+                         curses.A_REVERSE if i == pos else curses.A_NORMAL)
+            s.addstr(h - 1, 2, "↑↓ navegar · Enter escolher · Esc voltar"[:w - 4])
+            s.refresh()
+            ch = s.getch()
+            if ch == 27:
+                return None
+            elif ch in (curses.KEY_UP, ord("k")):
+                pos = (pos - 1) % len(sessions)
+            elif ch in (curses.KEY_DOWN, ord("j")):
+                pos = (pos + 1) % len(sessions)
+            elif ch in (10, 13, curses.KEY_ENTER):
+                return sessions[pos]
+
+    def notice(self, msg: str):
+        s = self.stdscr
+        s.clear()
+        s.addstr(2, 2, msg)
+        s.addstr(4, 2, "Pressione qualquer tecla...")
+        s.refresh()
+        s.getch()
+
+    def edit_external(self, path: Path):
+        """Abre $EDITOR fora do modo curses e volta. Sem editor próprio."""
+        import shutil
+        import subprocess
+        editor = os.environ.get("EDITOR") or shutil.which("nano") \
+            or shutil.which("vi") or "vi"
+        curses.endwin()
+        try:
+            print(f"\nEditando {path} com {editor} (salve e saia p/ voltar)...")
+            subprocess.run([editor, str(path)])
+        finally:
+            self.stdscr.refresh()
+
+    def review_flow(self):
+        from core import review as _rev
+        sess = self.pick_session()
+        if sess is None:
+            return
+        tdir = Path(sess["dir"]) / "transcription"
+        words_txt = tdir / "words.txt"
+        if not words_txt.exists():
+            self.notice(f"Sem words.txt em {tdir} (sessão incompleta).")
+            return
+        self.edit_external(words_txt)
+        try:
+            edited = _rev.parse_words_txt(words_txt)
+        except RuntimeError as e:
+            self.notice(f"words.txt inválido (nada aprovado): {e}")
+            return
+        self.notice(f"{len(edited)} segmentos válidos. Volte ao menu e use "
+                    f"'Aprovar transcrição' p/ aprovar (ou aprove agora).")
+
+    def approve_flow(self):
+        from core import review as _rev
+        sess = self.pick_session()
+        if sess is None:
+            return
+        tdir = Path(sess["dir"]) / "transcription"
+        if not (tdir / "words.txt").exists():
+            self.notice(f"Sem words.txt em {tdir} (use 'Revisar transcrição').")
+            return
+        try:
+            edited = _rev.parse_words_txt(tdir / "words.txt")
+        except RuntimeError as e:
+            self.notice(f"words.txt inválido (nada aprovado): {e}")
+            return
+        s = self.stdscr
+        s.clear()
+        s.addstr(2, 2, f"Aprovar {len(edited)} segmentos de '{sess['name']}'?")
+        s.addstr(4, 2, "[S]im · outra tecla cancela")
+        s.refresh()
+        if s.getch() not in (ord("s"), ord("S")):
+            return
+        final = _rev.approve(tdir, edited)
+        self.notice(f"TRANSCRIÇÃO APROVADA: {final}")
+
+    def finalize_flow(self):
+        from core import review as _rev
+        import shutil
+        sess = self.pick_session()
+        if sess is None:
+            return
+        tdir = Path(sess["dir"]) / "transcription"
+        try:
+            _rev.require_approved(tdir / "transcript.json")
+        except RuntimeError as e:
+            self.notice(str(e))
+            return
+        out = Path(self.cfg.get("out") or "cortes")
+        s = self.stdscr
+        s.clear()
+        s.addstr(2, 2, f"Finalizar '{sess['name']}'?")
+        s.addstr(3, 2, f"Remove {sess['dir']}; mantém {out}/ + approved-transcript.json.")
+        s.addstr(5, 2, "[S]im · outra tecla cancela")
+        s.refresh()
+        if s.getch() not in (ord("s"), ord("S")):
+            return
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "approved-transcript.json").write_text(
+            (tdir / "transcript.json").read_text(encoding="utf-8"), encoding="utf-8")
+        shutil.rmtree(Path(sess["dir"]), ignore_errors=True)
+        self.notice(f"FINALIZADO: finais em {out.resolve()}")
+
 
 def _curses_main(stdscr, cfg: dict, models: list[dict]):
     curses.curs_set(0)
@@ -495,6 +645,15 @@ def _curses_main(stdscr, cfg: dict, models: list[dict]):
             tui.view_file(latest_transcript(tui.cfg.get("cache_dir") or ".cache/clipper"),
                           "TRANSCRIÇÃO",
                           "Nenhuma transcrição em cache (use --cache-dir ao processar).")
+            continue
+        if choice == "Revisar transcrição":
+            tui.review_flow()
+            continue
+        if choice == "Aprovar transcrição":
+            tui.approve_flow()
+            continue
+        if choice == "Finalizar sessão":
+            tui.finalize_flow()
             continue
         # Processar vídeo
         while True:
