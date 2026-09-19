@@ -23,11 +23,14 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 ## Como funciona
 
 1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão),
-   com VAD Silero (`models/ggml-silero-v5.1.2.bin`, preserva pausas);
-   fallback `faster-whisper` CPU int8, sempre com motivo explícito.
+   **sem VAD** (auditoria em `docs/caption-audit.md`: o VAD apagava ~24 s de
+   fala em gameplay e colapsava timestamps; ver também `docs/vad-experiment.md`);
+   fallback `faster-whisper` CPU int8 sem VAD, sempre com motivo explícito.
    Opcional: `CLIPPER_TRANSCRIBE_AUDIO_FILTER` (ex. loudnorm) aplicado só ao
    áudio da transcrição — off por padrão (sem ganho medido em áudio estourado).
-2. **Janelas candidatas** — janela deslizante 20–90 s, passo 20 s, sobre a
+2. **Janelas candidatas** — janela deslizante sobre a transcrição (duração
+   configurável `--min-duration/--max-duration`, padrão 20–90 s; o máximo é
+   teto real, nem o `--pad` estoura), passo 20 s;
    transcrição; `start/end` ajustados à palavra mais próxima (±1,5 s) + respiro
    `--pad`.
 3. **Áudio** — energia por janela via `ffmpeg volumedetect`
@@ -189,7 +192,7 @@ python clipper.py lab-compare debug/transcription-lab/experiment-001 \
                           debug/transcription-lab/experiment-002
 ```
 
-Eixos: `--audio original|normalize|clean` (só p/ transcrição; o vídeo final
+Eixos: `--audio original|normalize|clean|compressed|denoised|declipped` (só p/ transcrição; o vídeo final
 nunca usa esse áudio), `--mode chunks|global`, `--context S` (só chunks),
 `--whisper-model` (qualquer `ggml-*.bin` em `models/`), `--start/--dur` p/
 recortar o trecho. Cada experimento salva `config.json`, `transcript.json`,
@@ -205,6 +208,23 @@ Evidência medida (2026-09-19, medium, trechos de 30 s):
 | `--audio clean` no ruim | 23→26 words, 0 degenerados, pontuação/partículas melhores, mesmo tempo |
 | `--audio clean` no limpo | 101→99 words, 6→5 degenerados, Δ médio ~0,25 s |
 | `--context 5` (fronteira 30 s) | **diverge** (Δ médio ~0,56 s) — sem benefício medido aqui |
+| presets em áudio clipado 90 s (`compressed/denoised/declipped`) | 0 deg em todos, mas +27 extras com Δ~0,6–0,8 s e confiança menor (0.72–0.75 vs 0.84) — assinatura de alucinação, **nada vira default** |
+
+### Áudio estourado (detecção, sem adivinhação)
+
+`core/acoustic.py` detecta clipping digital sustentado (peak ≥ 0.99 + rms ≥
+0.15 por ≥ 0.3 s; calibrado: áudio limpo = 0 eventos). Resultado vai ao
+manifest (`acoustic_events` com `start/end/type/confidence`) e ao debug.
+Queimar `*ÁUDIO ESTOURADO*` na legenda é opt-in: `--acoustic-captions`
+(a palavra sempre vence o evento em overlap). Risada **não** é detectada:
+sem assinatura confiável só com volume — veredito em `docs/caption-audit.md`.
+
+### Duração dos clips
+
+`--min-duration/--max-duration` (padrão 20/90, TUI tem os campos). O máximo é
+respeitado de verdade: janelas nascem ≤ max, o snap corta o excesso do `--pad`
+e a expansão p/ mínimo nunca estoura o máximo (mídia curta = clip curto, sem
+compensação mágica). Ex.: `--max-duration 60` garante clipes de até 60 s.
 
 ## Scoring e modelos
 
@@ -288,7 +308,10 @@ fingerprint `tamanho+mtime+modelo+idioma` — trocar o arquivo invalida sozinho.
 | `--cache-dir DIR` | Ativa cache | desligado |
 | `--force-retranscribe` | Ignora cache de transcrição | off |
 | `--force-rescore` | Ignora cache de scores | off |
-| `--pad SEC` (0–5) | Respiro antes/depois do corte | 0.8 |
+| `--pad SEC` (0–5) | Respiro antes/depois do corte (nunca estoura o max) | 0.8 |
+| `--min-duration S` | Duração mínima do clipe (expande contexto) | 20 |
+| `--max-duration S` | Duração máxima do clipe (teto real) | 90 |
+| `--acoustic-captions` | Queima *ÁUDIO ESTOURADO* (experimental) | off |
 | `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
 | `--no-captions` | Sem legenda queimada | legenda on |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
@@ -342,14 +365,17 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
   agrupamento; extensão visual de 1,0 s nunca invade a próxima cue (só a
   parte artificial é cortada, span real preservado); ASS com `PlayRes` =
   frame real, Montserrat ExtraBold 54 px na base. Timestamps do próprio
-  Whisper têm jitter natural (~0,5 s, VAD tende a adiantar ~0,3–0,7 s no
-  áudio limpo medido; chunking altera ~0,01–0,02 s) — sem offset global.
+  Whisper têm jitter natural (~0,5 s; chunking altera ~0,01–0,02 s) — sem
+  offset global, sem VAD no caminho padrão.
+  Desde a remoção do VAD do caminho padrão, a causa dominante de "legenda sem
+  som" (VAD apagando fala) não existe mais; ver `docs/caption-audit.md`.
 - **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
   na TUI) preserva por clipe `captions.ass`, `captions.srt`,
   `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem +
-  auditoria WORD→CUE) em `debug/`, mais `transcript.txt` legível do vídeo. Testes:
+  auditoria WORD→CUE + drop reasons: `end <= start` vs `outside_selected_clip`)
+  em `debug/`, mais `transcript.txt` legível do vídeo. Testes:
   `python -m unittest discover -s tests`.
-- **Sem candidatos?** Vídeo sem fala (ou VAD removeu tudo) — `segments: 0`.
+- **Sem candidatos?** Vídeo sem fala — `segments: 0`.
 - **Disco?** Preflight falha com < 1 GB livre, avisa com < 5 GB.
 - **Interrompeu (Ctrl+C)?** Relatório `interrupted` em `metrics/` com a etapa;
   temporários se limpam; `pgrep -x ffmpeg` deve voltar vazio.

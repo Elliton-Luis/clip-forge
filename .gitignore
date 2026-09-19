@@ -14,3 +14,7 @@ debug/
 # - models/: ggml-medium.bin (~1,5 GB, HuggingFace ggerganov/whisper.cpp)
 thirdparty/
 models/
+.ai-jail
+*.md
+# Sessões de revisão humana (work/<video>/): intermediários locais.
+work/
