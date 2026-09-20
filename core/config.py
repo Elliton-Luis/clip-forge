@@ -78,3 +78,8 @@ NMS_DECAY_STRENGTH = 0.8
 
 # P1-2
 AUDIO_ENERGY_TIMEOUT = 8
+# Versão da medição de energia (entra no cache de scores). Aumente quando
+# mudar como energy é medido (ex: 1 = volumedetect só-áudio; era 0 implícita,
+# com decode de vídeo e timeouts em massa). Scores antigos voltam a pontuar
+# em vez de servir "media" obsoleto.
+AUDIO_ENERGY_VERSION = 1

@@ -7,7 +7,8 @@ import json
 import os
 from pathlib import Path
 from .models import Word, Segment
-from .config import WHISPER_MODEL_SIZE, WHISPER_LANGUAGE, TRANSCRIPT_PIPELINE_VERSION
+from .config import (WHISPER_MODEL_SIZE, WHISPER_LANGUAGE,
+                      TRANSCRIPT_PIPELINE_VERSION, AUDIO_ENERGY_VERSION)
 
 
 def fingerprint(video_path: str, model_size: str | None = None) -> str:
@@ -60,6 +61,10 @@ def load_scores(cache_dir: Path, fp: str, candidates: list) -> bool:
         return False
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
+        if data.get("energy_version", 0) != AUDIO_ENERGY_VERSION:
+            print(f"   ! cache scores com medição de energia antiga "
+                  f"(v{data.get('energy_version', 0)} vs v{AUDIO_ENERGY_VERSION}) — re-pontuando")
+            return False
         scores = data.get("scores", [])
         if len(scores) != len(candidates):
             print(f"   ! cache scores tamanho divergente ({len(scores)} vs {len(candidates)}) — re-pontuando")
@@ -85,6 +90,7 @@ def save_scores(cache_dir: Path, fp: str, candidates: list) -> None:
         p = cache_dir / f"{fp}.scores.json"
         data = {
             "fingerprint": fp,
+            "energy_version": AUDIO_ENERGY_VERSION,
             "scores": [
                 {"score": c.score, "reason": c.reason, "title": c.title,
                  "hashtags": c.hashtags, "failed": c.failed,

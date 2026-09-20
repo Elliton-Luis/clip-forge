@@ -466,7 +466,8 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 - Scoring é textual + energia: jogada visual silenciosa continua difícil sem
   visão computacional. É também o gargalo de tempo (reasoning ~1 min/lote).
 - Haar Cascade simples (webcam fixa; fora de cena → centro).
-- Áudio adiciona ~7 s/candidato (`volumedetect`); `--no-audio-features` pula.
+- Áudio adiciona ~0,2 s/candidato (`volumedetect` só-áudio, sem decode de
+  vídeo); `--no-audio-features` pula.
 - `faster-whisper` nunca usa Intel GPU (CUDA-only) — por isso o backend Vulkan.
 - Cache por tamanho+mtime: edição que preserve ambos reutiliza cache (use
   `--force-*`).

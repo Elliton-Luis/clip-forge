@@ -73,8 +73,8 @@ def check(video_path: str, out_dir: Path, top_n: int,
     if top_n <= 0:
         errors.append(f"--top deve ser > 0 (recebido {top_n})")
 
-    if not os.environ.get("NVIDIA_API_KEY"):
-        errors.append("NVIDIA_API_KEY não definida — pegue uma grátis em https://build.nvidia.com")
+    if not (os.environ.get("NVIDIA_API_KEY") or os.environ.get("NVIDIA_API_KEYS")):
+        errors.append("NVIDIA_API_KEY(S) não definida — pegue uma grátis em https://build.nvidia.com")
 
     if errors:
         for err in errors:

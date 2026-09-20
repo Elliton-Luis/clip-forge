@@ -11,10 +11,14 @@ from .config import AUDIO_ENERGY_TIMEOUT, CLIPPER_FFMPEG_THREADS
 
 def measure(video_path: str, start: float, end: float) -> str:
     duration = max(0.1, end - start)
+    # Só áudio: -vn + -map 0:a:0 impedem o decode do vídeo (auditoria
+    # 2026-09-20: sem isso, cada janela decodificava AV1/H264 à toa e batia
+    # no timeout de 8 s, retornando "media" sem medir nada).
     cmd = [
         "ffmpeg", "-hide_banner", "-threads", str(CLIPPER_FFMPEG_THREADS),
         "-ss", str(max(0, start)), "-t", str(duration),
-        "-i", video_path, "-filter:a", "volumedetect", "-f", "null", "-",
+        "-i", video_path, "-vn", "-map", "0:a:0",
+        "-filter:a", "volumedetect", "-f", "null", "-",
     ]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=AUDIO_ENERGY_TIMEOUT)
