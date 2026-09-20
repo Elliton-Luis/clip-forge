@@ -59,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default=DEFAULT_MODEL, help=f"Modelo NIM (padrão: {DEFAULT_MODEL})")
     p.add_argument("--no-vertical", action="store_true", help="Não recortar para 9:16")
     p.add_argument("--no-captions", action="store_true", help="Não queimar legendas")
+    p.add_argument("--no-title", action="store_true", help="Não queimar o título/hook (independente das legendas)")
     p.add_argument("--caption-mode", default="words", choices=["words", "intervals"],
                    help="Agrupamento das legendas: words (blocos de leitura, padrão medido) ou intervals (rajadas de fala, experimental)")
     p.add_argument("--acoustic-captions", action="store_true",
@@ -106,6 +107,7 @@ def parse_cli(argv=None):
 
 CONFIG_FIELDS = (
     "video", "out", "top", "model", "no_vertical", "no_captions",
+    "no_title",
     "acoustic_captions", "whisper_model", "laughs", "caption_mode",
     "cache_dir", "force_retranscribe", "force_rescore", "pad",
     "min_duration", "max_duration",
@@ -132,6 +134,7 @@ def config_from_args(args) -> dict:
         "model": args.model,
         "no_vertical": bool(args.no_vertical),
         "no_captions": bool(args.no_captions),
+        "no_title": bool(args.no_title),
         "acoustic_captions": bool(args.acoustic_captions),
         "caption_mode": args.caption_mode,
         "laughs": args.laughs,
@@ -189,6 +192,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-vertical")
     if cfg["no_captions"]:
         parts.append("--no-captions")
+    if cfg.get("no_title"):
+        parts.append("--no-title")
     if cfg.get("acoustic_captions"):
         parts.append("--acoustic-captions")
     if cfg.get("caption_mode", "words") != "words":
@@ -397,6 +402,7 @@ def run_pipeline(cfg: dict) -> None:
         "min_duration": cfg["min_duration"], "max_duration": cfg["max_duration"],
         "min_score": cfg["min_score"], "max_per_10min": cfg["max_per_10min"],
         "vertical": not cfg["no_vertical"], "captions": not cfg["no_captions"],
+        "title": not cfg.get("no_title", False),
         "audio_features": not cfg["no_audio_features"],
     }
     metrics = ExecutionMetrics(video, run_args).start()
@@ -514,7 +520,8 @@ def run_pipeline(cfg: dict) -> None:
                     events = (events or []) + in_clip
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
                          debug_dir=debug_dir, acoustic_events=events,
-                         caption_mode=cfg.get("caption_mode", "words"))
+                         caption_mode=cfg.get("caption_mode", "words"),
+                         title=not cfg.get("no_title", False))
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")
                 clips_failed += 1

@@ -25,7 +25,7 @@ def full_cfg(**over):
     cfg = {
         "video": "videos/VideoMedio.mp4", "out": "cortes2", "top": 5,
         "model": "nvidia/nemotron-3-super-120b-a12b",
-        "no_vertical": True, "no_captions": False,
+        "no_vertical": True, "no_captions": False, "no_title": False,
         "cache_dir": ".cache/x", "force_retranscribe": True,
         "force_rescore": False, "pad": 1.2, "min_duration": 20, "max_duration": 90,
         "no_audio_features": True,

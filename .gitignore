@@ -18,3 +18,4 @@ models/
 *.md
 # Sessões de revisão humana (work/<video>/): intermediários locais.
 work/
+*.pdf

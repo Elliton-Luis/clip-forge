@@ -375,6 +375,7 @@ toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
 | `--laughs FILE` | Ranges `INICIO FIM` p/ *RISADA ESTOURADA* amarela | — |
 | `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
 | `--no-captions` | Sem legenda queimada | legenda on |
+| `--no-title` | Sem título/hook queimado (independente das legendas) | título on |
 | `--caption-mode` | `words` (blocos de leitura) ou `intervals` (rajadas, experimental) | `words` |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
 | `--min-score F` (0–10) | Score mínimo | 6.0 |
@@ -457,3 +458,19 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
 - Cache por tamanho+mtime: edição que preserve ambos reutiliza cache (use
   `--force-*`).
 - Sem suite automatizada; Linux (Fedora 44 testado) na prática.
+
+### Título e legendas independentes
+
+Título (hook + destaque) e legenda são recursos separados, ambos ligados
+por padrão:
+
+```bash
+python clipper.py live.mp4 --out cortes/          # título + legenda
+python clipper.py live.mp4 --out so_titulo --no-captions   # só título
+python clipper.py live.mp4 --out so_legenda --no-title     # só legenda
+python clipper.py live.mp4 --out limpo --no-title --no-captions  # nenhum
+```
+
+Na TUI: checkboxes `Título (hook)` e `Legendas`. Desligar um recurso pula
+seu processamento de render (sem filtro `subtitles` quando não há o que
+queimar); transcrição, scoring e seleção continuam iguais.

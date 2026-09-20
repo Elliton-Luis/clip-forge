@@ -172,6 +172,7 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         ("Duração", f"{cfg.get('min_duration')}–{cfg.get('max_duration')}s"),
         ("Máx/10min", str(cfg.get("max_per_10min"))),
         ("Vertical", "sim" if not cfg.get("no_vertical") else "não"),
+        ("Título", "sim" if not cfg.get("no_title") else "não"),
         ("Legendas", "sim" if not cfg.get("no_captions") else "não"),
         ("Modo legenda", cfg.get("caption_mode") or "words"),
         ("Audio features", "sim" if not cfg.get("no_audio_features") else "não"),
@@ -264,6 +265,7 @@ class TUI:
             ("max_duration", "Duração máxima do clipe (s)", "float"),
             ("max_per_10min", "Máximo por 10 min (1–20)", "int"),
             ("vertical", "Vídeo vertical", "bool"),
+            ("title", "Título (hook)", "bool"),
             ("captions", "Legendas", "bool"),
             ("caption_mode", "Modo das legendas", "captionmode"),
             ("acoustic_captions", "Legenda *ÁUDIO ESTOURADO*", "bool"),
@@ -286,6 +288,8 @@ class TUI:
     def _get(self, key):
         if key == "vertical":
             return not self.cfg.get("no_vertical", False)
+        if key == "title":
+            return not self.cfg.get("no_title", False)
         if key == "captions":
             return not self.cfg.get("no_captions", False)
         if key == "audio_features":
@@ -303,6 +307,8 @@ class TUI:
     def _toggle(self, key):
         if key == "vertical":
             self.cfg["no_vertical"] = not self.cfg.get("no_vertical", False)
+        elif key == "title":
+            self.cfg["no_title"] = not self.cfg.get("no_title", False)
         elif key == "captions":
             self.cfg["no_captions"] = not self.cfg.get("no_captions", False)
         elif key == "audio_features":

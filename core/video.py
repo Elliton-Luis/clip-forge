@@ -961,7 +961,16 @@ def _video_encoder() -> tuple[str, list[str]]:
 def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions: bool,
         debug_dir: Path | str | None = None,
         acoustic_events: list | None = None,
-        caption_mode: str = "words") -> None:
+        caption_mode: str = "words",
+        title: bool = True) -> None:
+    """Corta/renderiza um clipe. Título e legenda são independentes:
+
+    - title on: hook do título + destaque das palavras do título (só via ASS).
+    - captions on: cues das palavras (ASS ou SRT legado sem dimensões).
+    - ambos off: nenhum filtro de subtitles, vídeo limpo.
+    A transcrição (c.words) continua disponível para ambos; desligar um
+    recurso nunca desliga o outro.
+    """
     duration = c.duration
     filters: list[str] = []
 
@@ -1008,23 +1017,30 @@ def cut(video_path: str, c: Candidate, out_path: Path, vertical: bool, captions:
 
     srt_file: str | None = None
     try:
-        if captions and (c.words or acoustic_events):
+        want_subs = ((captions and (c.words or acoustic_events))
+                     or (title and c.title))
+        if want_subs:
             # Eventos acústicos (opt-in): cues absolutas fundidas; palavra vence.
+            # Sem captions, só o título é renderizado (hook); sem título, só
+            # as cues — palavras vazias geram ASS só com hook, nunca com cues.
             from .acoustic import event_cues as _event_cues
-            ev_cues = _event_cues(acoustic_events or [], c.start, c.end)
+            ev_cues = (_event_cues(acoustic_events or [], c.start, c.end)
+                       if captions else [])
+            words = c.words if captions else []
             # ASS com PlayRes = frame real → layout determinístico em pixels.
             # Sem dimensões conhecidas, cai no SRT legado (comportamento anterior).
             # Destaque: palavras do título (determinístico, sem LLM).
-            hl = highlight_words_from_title(c.title)
+            hl = highlight_words_from_title(c.title) if title else None
+            hook = (c.title or None) if title else None
             if out_w and out_h:
                 # Hook = título do scoring (sem LLM extra); vazio = sem hook.
-                subs = build_ass(c.words, c.start, c.end, out_w, out_h, font_size,
-                                 highlight=hl, hook_title=c.title or None,
+                subs = build_ass(words, c.start, c.end, out_w, out_h, font_size,
+                                 highlight=hl, hook_title=hook,
                                  event_cues=ev_cues or None,
                                  caption_mode=caption_mode)
                 suffix = ".ass"
             else:
-                subs = build_srt(c.words, c.start, c.end, event_cues=ev_cues or None,
+                subs = build_srt(words, c.start, c.end, event_cues=ev_cues or None,
                                  caption_mode=caption_mode)
                 suffix = ".srt"
             if subs:
