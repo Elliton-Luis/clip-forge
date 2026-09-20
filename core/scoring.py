@@ -7,7 +7,9 @@ import math
 import os
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from .config import NVIDIA_BASE_URL, DEFAULT_MODEL, SEGMENTS_PER_SCORING_CALL
 from .cache import load_scores, save_scores
@@ -157,6 +159,37 @@ def _load_api_keys() -> list[str]:
 _key_cursor = 0  # rodízio global entre chaves (resetável em testes)
 
 
+# Concorrência limitada (§7): 1 worker por chave, teto de 3. Requests de
+# ~27 s geram ~2 RPM/worker — longe do limite; o pacing abaixo é só rede
+# de segurança (vale também para retries, que passam pelo mesmo caminho).
+SCORING_MAX_WORKERS = 3
+# 40 RPM por chave = 1 req/1,5 s; margem conservadora: 1 req/2 s (~30 RPM).
+KEY_MIN_INTERVAL_SEC = 2.0
+# Teto do Retry-After honrado em 429 (nunca dormir para sempre).
+RATE_LIMIT_WAIT_CAP_SEC = 120.0
+
+
+class _KeyGate:
+    """Pacing por chave: intervalo mínimo entre inícios de request.
+
+    Thread-safe; toda tentativa (incluindo retry) passa por aqui antes de
+    tocar a API, então retries nunca furam o rate limit (§9).
+    """
+
+    def __init__(self, min_interval: float = KEY_MIN_INTERVAL_SEC):
+        self.min_interval = min_interval
+        self._lock = threading.Lock()
+        self._last = 0.0
+
+    def wait(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            gap = now - self._last
+            if gap < self.min_interval:
+                time.sleep(self.min_interval - gap)
+            self._last = time.monotonic()
+
+
 def _next_client(clients: list):
     """Próximo cliente em round-robin. Retorna (client, idx); valor nunca logado."""
     global _key_cursor
@@ -165,24 +198,95 @@ def _next_client(clients: list):
     return clients[idx], idx
 
 
+def _rate_limit_wait(exc: Exception, default: float) -> float | None:
+    """Segundos a aguardar se exc for 429, senão None.
+
+    Honra `Retry-After` da API quando presente (limitado ao teto);
+    sem ele, usa o backoff padrão. Detecção por `status_code` (SDK) ou
+    pelo texto "429" (exceções genéricas) — nunca pelo tipo da exceção.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        try:
+            status = 429 if "429" in str(exc) else None
+        except Exception:
+            status = None
+    if status != 429:
+        return None
+    headers = getattr(getattr(exc, "response", None), "headers", None) or {}
+    try:
+        ra = float(headers.get("retry-after", ""))
+        return max(0.0, min(ra, RATE_LIMIT_WAIT_CAP_SEC))
+    except (TypeError, ValueError):
+        return default
+
+
+def _bump(stats: dict | None, lock, key: str, delta: float = 1) -> None:
+    if stats is None:
+        return
+    if lock is not None:
+        with lock:
+            stats[key] = stats.get(key, 0) + delta
+    else:
+        stats[key] = stats.get(key, 0) + delta
+
+
+def _note_latency(stats: dict | None, lock, seconds: float) -> None:
+    """Soma/min/max de latência por tentativa (base do avg e do speedup)."""
+    if stats is None:
+        return
+
+    def _add():
+        stats["total_time"] = stats.get("total_time", 0.0) + seconds
+        cur_min = stats.get("min_lat")
+        stats["min_lat"] = seconds if cur_min is None else min(cur_min, seconds)
+        cur_max = stats.get("max_lat")
+        stats["max_lat"] = seconds if cur_max is None else max(cur_max, seconds)
+
+    if lock is not None:
+        with lock:
+            _add()
+    else:
+        _add()
+
+
 def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int = 3,
-                     stats: dict | None = None) -> dict:
-    # clients: lista não-vazia de OpenAI; cada tentativa (incluindo retries
-    # após 503) usa a próxima chave — quota por conta diluída entre chamadas.
+                     stats: dict | None = None,
+                     key_hint: int | None = None,
+                     gates: list | None = None,
+                     lock=None) -> dict:
+    # clients: lista não-vazia de OpenAI. Caminho serial (key_hint None):
+    # cada tentativa usa a próxima chave do rodízio global. Caminho paralelo:
+    # o lote tem afinidade com a chave key_hint e só roda para a próxima em
+    # retry — quota diluída, distribuição determinística (lote i → chave i%n).
+    # Toda tentativa passa pelo gate da chave (pacing) antes da API.
     backoffs = [10, 30, 60]
     last = None
     nkeys = len(clients)
     for attempt in range(retries):
-        client, kidx = _next_client(clients)
-        if stats is not None:
-            stats["requests"] += 1
+        kidx = ((key_hint + attempt) % nkeys) if key_hint is not None else None
+        if kidx is None:
+            client, kidx = _next_client(clients)
+        else:
+            client = clients[kidx]
+        if gates is not None:
+            gates[kidx].wait()
+        _bump(stats, lock, "requests")
         t0 = time.time()
         try:
             result, tokens = _call_nim(client, model, batch, prompt)
-            if stats is not None:
-                stats["successes"] += 1
-                stats["total_time"] += time.time() - t0
-                if tokens:
+            _bump(stats, lock, "successes")
+            _note_latency(stats, lock, time.time() - t0)
+            if tokens:
+                if lock is not None:
+                    with lock:
+                        for k_src, k_dst in (("prompt", "prompt_tokens"),
+                                             ("completion", "completion_tokens"),
+                                             ("total", "total_tokens")):
+                            v = tokens.get(k_src)
+                            if v is not None:
+                                stats[k_dst] = (stats.get(k_dst) or 0) + v
+                else:
                     for k_src, k_dst in (("prompt", "prompt_tokens"),
                                          ("completion", "completion_tokens"),
                                          ("total", "total_tokens")):
@@ -198,17 +302,54 @@ def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int
             last = e
             print(f"      ! Erro NIM (tentativa {attempt+1}/{retries}, "
                   f"chave {kidx+1}/{nkeys}): {e}")
-        if stats is not None:
-            stats["total_time"] += time.time() - t0
-            if attempt == retries - 1:
-                stats["failures"] += 1
-            else:
-                stats["retries"] += 1
+        _note_latency(stats, lock, time.time() - t0)
+        if attempt == retries - 1:
+            _bump(stats, lock, "failures")
+        else:
+            _bump(stats, lock, "retries")
         if attempt < retries - 1:
             wait = backoffs[min(attempt, len(backoffs) - 1)]
-            print(f"        aguardando {wait}s...")
-            time.sleep(wait)
+            rl_wait = _rate_limit_wait(last, wait)
+            if rl_wait is not None:
+                _bump(stats, lock, "rate_limited")
+                if rl_wait != wait:
+                    print(f"        429 na chave {kidx+1}/{nkeys}: aguardando "
+                          f"{rl_wait:.0f}s (Retry-After)...")
+                else:
+                    print(f"        429 na chave {kidx+1}/{nkeys}: aguardando {wait}s...")
+                time.sleep(rl_wait)
+            else:
+                print(f"        aguardando {wait}s...")
+                time.sleep(wait)
     raise last  # type: ignore
+
+
+def _apply_batch_result(batch: list, id_map: dict, result: dict) -> None:
+    """Associa respostas aos candidatos pelos ids (nunca por ordem de
+    conclusão). Id ausente ou fora do lote = candidato `failed`."""
+    ids = {idx for idx, _ in batch}
+    seen: set[int] = set()
+    for item in result.get("clips", []):
+        idx = item.get("id")
+        if idx is None or idx not in ids:
+            continue
+        seen.add(idx)
+        c = id_map[idx]
+        c.score = _clamp(item.get("score", 0))
+        c.reason = str(item.get("reason", ""))[:200]
+        c.title = str(item.get("title", ""))[:50]
+        c.hashtags = _sanitize_hashtags(item.get("hashtags", ""))
+        c.failed = False
+    for idx, c in batch:
+        if idx not in seen:
+            c.failed = True
+            print(f"      ! candidato {idx} sem retorno — sem nota")
+
+
+def _fail_batch(batch: list, n: int, num: int, e: Exception) -> None:
+    print(f"   ! Falha lote {num}/{n}: {e}. Marcando sem nota.")
+    for _, c in batch:
+        c.failed = True
 
 
 def score(candidates: list, model: str = DEFAULT_MODEL,
@@ -246,55 +387,90 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
     print(f"[3/5] Pontuando {len(candidates)} candidatos em {n_batches} chamada(s)...")
     id_map = {idx: c for idx, c in enumerate(candidates)}
     stats = {"requests": 0, "successes": 0, "failures": 0, "retries": 0,
-             "total_time": 0.0, "prompt_tokens": 0, "completion_tokens": 0,
+             "rate_limited": 0,
+             "total_time": 0.0, "min_lat": None, "max_lat": None,
+             "prompt_tokens": 0, "completion_tokens": 0,
              "total_tokens": 0}
+    indexed = list(enumerate(candidates))
+    batches = [indexed[s:s + SEGMENTS_PER_SCORING_CALL]
+               for s in range(0, len(candidates), SEGMENTS_PER_SCORING_CALL)]
 
-    for start in range(0, len(candidates), SEGMENTS_PER_SCORING_CALL):
-        batch = list(enumerate(candidates))[start:start + SEGMENTS_PER_SCORING_CALL]
-        ids = {idx for idx, _ in batch}
-        try:
-            result = _call_with_retry(clients, model, batch, prompt, stats=stats)
-        except Exception as e:
-            print(f"   ! Falha lote {start//SEGMENTS_PER_SCORING_CALL+1}/{n_batches}: {e}. Marcando sem nota.")
-            for _, c in batch:
-                c.failed = True
-            continue
-        seen: set[int] = set()
-        for item in result.get("clips", []):
-            idx = item.get("id")
-            if idx is None or idx not in ids:
+    # Concorrência limitada: 1 worker por chave (teto 3). Com 1 chave o
+    # caminho é idêntico ao serial anterior — sem regressão possível.
+    workers = min(len(clients), SCORING_MAX_WORKERS)
+    gates = [_KeyGate(KEY_MIN_INTERVAL_SEC) for _ in clients]
+    t_wall = time.time()
+    if workers <= 1:
+        for num, batch in enumerate(batches, start=1):
+            try:
+                result = _call_with_retry(clients, model, batch, prompt,
+                                          stats=stats, gates=gates)
+            except Exception as e:
+                _fail_batch(batch, n_batches, num, e)
                 continue
-            seen.add(idx)
-            c = id_map[idx]
-            c.score = _clamp(item.get("score", 0))
-            c.reason = str(item.get("reason", ""))[:200]
-            c.title = str(item.get("title", ""))[:50]
-            c.hashtags = _sanitize_hashtags(item.get("hashtags", ""))
-            c.failed = False
-        for idx, c in batch:
-            if idx not in seen:
-                c.failed = True
-                print(f"      ! candidato {idx} sem retorno — sem nota")
-        print(f"   -> lote {start // SEGMENTS_PER_SCORING_CALL + 1}/{n_batches} concluído")
+            _apply_batch_result(batch, id_map, result)
+            print(f"   -> lote {num}/{n_batches} concluído")
+    else:
+        print(f"   -> scoring paralelo: {workers} workers "
+              f"({len(clients)} chaves, lote i → chave i%{len(clients)})")
+        lock = threading.Lock()
+
+        def run_batch(num_batch: tuple[int, list]):
+            num, batch = num_batch
+            try:
+                result = _call_with_retry(
+                    clients, model, batch, prompt, stats=stats,
+                    key_hint=(num - 1) % len(clients),
+                    gates=gates, lock=lock)
+            except Exception as e:
+                return (num, (None, e))
+            return (num, (result, None))
+
+        # client OpenAI (httpx) é thread-safe; resultados aplicados pelo
+        # índice do lote na thread principal — ordem de conclusão irrelevante.
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="score") as pool:
+            done = dict(pool.map(run_batch, enumerate(batches, start=1)))
+        for num in range(1, n_batches + 1):
+            result, err = done[num]
+            if err is not None:
+                _fail_batch(batches[num - 1], n_batches, num, err)
+            else:
+                _apply_batch_result(batches[num - 1], id_map, result)
+            print(f"   -> lote {num}/{n_batches} concluído")
+    wall = time.time() - t_wall
 
     if cache_dir and fingerprint:
         save_scores(cache_dir, fingerprint, candidates)
 
     failed = sum(1 for c in candidates if c.failed)
     print(f"   -> scoring: {len(candidates)-failed} pontuados, {failed} sem nota")
+    n_req = stats["requests"]
+    avg = stats["total_time"] / n_req if n_req else None
+    min_lat = stats.get("min_lat")
+    max_lat = stats.get("max_lat")
+    speedup = (stats["total_time"] / wall) if wall > 0 else None
+    print(f"   -> [perf] scoring: {n_req} requests em {wall:.1f}s wall "
+          f"(sequencial ~{stats['total_time']:.1f}s, {speedup:.2f}x com "
+          f"{workers} worker(s)), lat req "
+          f"{(min_lat or 0):.1f}/{avg or 0:.1f}/{(max_lat or 0):.1f}s "
+          f"(min/med/max), retries={stats['retries']}, 429s={stats['rate_limited']}")
     if metrics is not None:
         try:
-            n_req = stats["requests"]
             metrics.set_nvidia(
                 model=model, requests=n_req, successes=stats["successes"],
                 failures=stats["failures"], retries=stats["retries"],
                 total_time_sec=round(stats["total_time"], 3),
-                avg_latency_sec=round(stats["total_time"] / n_req, 3) if n_req else None,
+                avg_latency_sec=round(avg, 3) if avg else None,
                 prompt_tokens=stats["prompt_tokens"] or None,
                 completion_tokens=stats["completion_tokens"] or None,
                 total_tokens=stats["total_tokens"] or None,
                 cost=None,  # sem tabela de preços confiável => nunca estimar
                 keys=len(clients),
+                workers=workers,
+                min_latency_sec=round(min_lat, 3) if min_lat else None,
+                max_latency_sec=round(max_lat, 3) if max_lat else None,
+                rate_limited=stats["rate_limited"],
             )
             metrics.add_retries(stats["retries"])
         except Exception:

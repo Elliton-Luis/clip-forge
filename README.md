@@ -301,6 +301,19 @@ de ler o JSON.
 > 17 min num vídeo de 7 min (85% do run). O default Nemotron é bem mais rápido
 > com o mesmo momento selecionado.
 
+### Concorrência do scoring
+
+Lotes independentes rodam em paralelo: **1 worker por chave, teto de 3**
+(`NVIDIA_API_KEYS="k1,k2,k3"` — mesma convenção de antes; 1 chave =
+comportamento serial de sempre). Cada chave tem pacing próprio (~30 RPM,
+margem sobre os 40 RPM da API) e todo retry passa pelo mesmo pacing;
+`429` honra `Retry-After`. Resultados sempre voltam ao candidato original
+pelo id — ordem de conclusão não afeta seleção. Ao final o scoring imprime
+`[perf]` com wall vs estimativa serial (speedup), latências min/med/max,
+retries e 429s (também em `metrics/*.json`, campos `workers`,
+`min/max_latency_sec`, `rate_limited`). Prompt, modelo e parsing
+inalterados: só o *quando* mudou, não o *quê*.
+
 ## Revisão humana da transcrição
 
 A transcrição aprovada é a fonte da verdade: scoring, títulos, legendas e

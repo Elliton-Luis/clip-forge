@@ -271,6 +271,8 @@ class ExecutionMetrics:
             "retries": 0, "total_time_sec": None, "avg_latency_sec": None,
             "prompt_tokens": None, "completion_tokens": None,
             "total_tokens": None, "cost": None, "keys": 1,
+            "workers": 1, "min_latency_sec": None, "max_latency_sec": None,
+            "rate_limited": 0,
         }
         self.ffmpeg: dict = {
             "backend": None, "encoder": None, "decoder": None,
