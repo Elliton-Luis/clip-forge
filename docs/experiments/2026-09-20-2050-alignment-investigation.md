@@ -6,7 +6,7 @@ Decisão e justificativa. Nada aqui toca o pipeline produtivo.
 
 - Whisper continua responsável por **"o que foi dito"** (texto nunca muda no aligner).
 - Aligner responde só **"quando exatamente"** (start/end por palavra).
-- Sem VAD no caminho de transcrição: `docs/20260919_0813_vad-experiment.md` provou que VAD
+- Sem VAD no caminho de transcrição: `docs/experiments/2026-09-19-0813-vad-experiment.md` provou que VAD
   apaga ~24 s de fala em gameplay, adianta onset (−0,67 s) e colapsa caudas.
   Qualquer opção que **exija** VAD está descartada como default.
 - Execução local, português, custo razoável, Fedora, Python 3.14, B580 (Vulkan/QSV).

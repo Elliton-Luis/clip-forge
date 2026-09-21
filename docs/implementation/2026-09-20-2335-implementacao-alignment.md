@@ -36,7 +36,7 @@ com uma etapa de forced alignment opt-in.
 - `tests/test_alignment.py`: 16 testes (contrato, fallback, monotonicidade,
   cache roundtrip, CLI, controle positivo do DP CTC com emissões sintéticas).
 
-## Experimento real (docs/20260920_2109_alignment-experiment.md)
+## Experimento real (docs/experiments/2026-09-20-2109-alignment-experiment.md)
 
 4 rodadas (GuilhermeCaindo e DerrubandoKit, backends refine e wav2vec2):
 `text_identical=True` sempre; `whisper-refine` idempotente (Δ=0 — re-decode com
@@ -52,5 +52,5 @@ neste material — preferido a deltas fabricados.
 `core/alignment.py`, `core/alignlab.py`, `core/models.py`, `core/cache.py`,
 `core/review.py`, `core/config.py`, `clipper.py`, `requirements.txt`,
 `README.md`, `tests/test_alignment.py`, `tests/test_tui.py`,
-`docs/20260920_2050_alignment-investigation.md`, `docs/20260920_2109_alignment-experiment.md`.
+`docs/experiments/2026-09-20-2050-alignment-investigation.md`, `docs/experiments/2026-09-20-2109-alignment-experiment.md`.
 Scoring, seleção, duração, títulos e renderização: intocados.

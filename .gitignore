@@ -15,7 +15,7 @@ debug/
 thirdparty/
 models/
 .ai-jail
-*.md
+# Documentação (docs/) é versionada: nunca ignorar *.md / *.pdf aqui.
+# PDFs em docs/ são espelhos dos .md (mesmo basename) ou referências técnicas.
 # Sessões de revisão humana (work/<video>/): intermediários locais.
 work/
-*.pdf

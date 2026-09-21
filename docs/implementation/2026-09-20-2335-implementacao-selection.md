@@ -36,7 +36,7 @@ centrar nele. Maximizar duração/fala/energia/score-médio não maximiza
 - `tests/test_peaks.py`: 21 testes (subjanelas, heurística, construção do clip,
   overlap, select_peak, parse defensivo de títulos, controle de id inválido).
 
-## Experimento real (docs/20260920_2213_peak-experiment.md)
+## Experimento real (docs/experiments/2026-09-20-2213-peak-experiment.md)
 
 - VideoMedio (7 min): classic [90s, 90s] → peak [25s, 32s] nos mesmos momentos.
 - VideoLongo1 (26 min): classic 5×90s+57s → peak 6× ~21–26s, pscores 8.5–10/llm,
@@ -51,5 +51,5 @@ centrar nele. Maximizar duração/fala/energia/score-médio não maximiza
 
 `core/peaks.py`, `core/peaklab.py`, `core/models.py` (campos peak),
 `core/cache.py`, `core/config.py`, `clipper.py`, `README.md`,
-`tests/test_peaks.py`, `tests/test_tui.py`, `docs/20260920_2213_peak-experiment.md`.
+`tests/test_peaks.py`, `tests/test_tui.py`, `docs/experiments/2026-09-20-2213-peak-experiment.md`.
 Legendas, forced alignment e dashboard: intocados.

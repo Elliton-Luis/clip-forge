@@ -6,6 +6,26 @@ clipes cortados em 9:16 com legenda queimada, prontos pra postar.
 
 Sem custo: Whisper local (na sua GPU) + tier grátis da NVIDIA Build.
 
+## Estrutura do repositório
+
+```text
+Clipper
+│
+├── clipper.py      → CLI/TUI (orquestrador fino; lógica vive em core/)
+├── core/           → código principal
+├── tests/          → testes automatizados
+├── docs/           → documentação ([índice](docs/README.md): architecture/,
+│                     experiments/, audits/, implementation/)
+├── scripts via run.sh, check_deps.sh, install_deps.sh; tools/ → smoke test GPU
+├── config/         → modelos de scoring (models.json); examples.json (few-shot)
+├── videos/         → entradas locais (ignorado pelo git, ~70 GB)
+├── cortes/         → clipes gerados + manifest.json (ignorado pelo git)
+├── metrics/        → relatórios de execução (ignorado pelo git)
+├── work/           → sessões de revisão humana (ignorado pelo git)
+├── debug/          → artefatos de laboratório --debug-captions etc. (ignorado)
+└── models/, thirdparty/ → ggml + whisper.cpp locais (ignorados pelo git)
+```
+
 ## O que faz
 
 ```text
@@ -23,8 +43,8 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 ## Como funciona
 
 1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão),
-   **sem VAD** (auditoria em `docs/20260919_1006_caption-audit.md`: o VAD apagava ~24 s de
-   fala em gameplay e colapsava timestamps; ver também `docs/20260919_0813_vad-experiment.md`);
+   **sem VAD** (auditoria em `docs/audits/2026-09-19-1006-caption-audit.md`: o VAD apagava ~24 s de
+   fala em gameplay e colapsava timestamps; ver também `docs/experiments/2026-09-19-0813-vad-experiment.md`);
    fallback `faster-whisper` CPU int8 sem VAD, sempre com motivo explícito.
    Opcional: `CLIPPER_TRANSCRIBE_AUDIO_FILTER` (ex. loudnorm) aplicado só ao
    áudio da transcrição — off por padrão (sem ganho medido em áudio estourado).
@@ -46,7 +66,7 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
    ranqueia por intensidade do auge, suprime mesmo-momento por overlap de
    peaks e re-titula só os selecionados com grounding validado. Comparar com
    `python clipper.py peak-compare video.mkv --top 5 --cache-dir .cache/clipper`
-   (números em `docs/20260920_2213_peak-experiment.md`: 90 s → ~21–32 s nos mesmos momentos).
+   (números em `docs/experiments/2026-09-20-2213-peak-experiment.md`: 90 s → ~21–32 s nos mesmos momentos).
 6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
    composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
    vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
@@ -217,7 +237,7 @@ ausente, sysfs do driver `xe` sem contadores — `null` honesto).
 
 ### Laboratório de transcrição (sem VAD)
 
-`docs/20260919_0813_vad-experiment.md` provou que o VAD prejudica timestamps (onset −0,67 s,
+`docs/experiments/2026-09-19-0813-vad-experiment.md` provou que o VAD prejudica timestamps (onset −0,67 s,
 cauda colapsada, truncagem de ~22 s em gameplay). O lab compara estratégias
 **sem VAD** sobre o mesmo áudio, sem tocar o pipeline produtivo:
 
@@ -309,8 +329,8 @@ Regras: cada word carrega `timestamp_source` (`whisper` ou
 span implausível (< 40 ms), o fallback mantém o Whisper e registra o motivo
 — nenhum timestamp é fabricado. Sem `torch`/`transformers`, `wav2vec2` cai
 para Whisper com erro explícito. Decisão entre opções, precisão esperada e
-limites em `docs/20260920_2050_alignment-investigation.md`; números medidos em
-`docs/20260920_2109_alignment-experiment.md` (resumo honesto: em gameplay ruidoso o gate
+limites em `docs/experiments/2026-09-20-2050-alignment-investigation.md`; números medidos em
+`docs/experiments/2026-09-20-2109-alignment-experiment.md` (resumo honesto: em gameplay ruidoso o gate
 barrou 100% — zero inventado, zero ganho fingido).
 
 ### Áudio estourado (detecção, sem adivinhação)
@@ -590,7 +610,7 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
   Whisper têm jitter natural (~0,5 s; chunking altera ~0,01–0,02 s) — sem
   offset global, sem VAD no caminho padrão.
   Desde a remoção do VAD do caminho padrão, a causa dominante de "legenda sem
-  som" (VAD apagando fala) não existe mais; ver `docs/20260919_1006_caption-audit.md`.
+  som" (VAD apagando fala) não existe mais; ver `docs/audits/2026-09-19-1006-caption-audit.md`.
 - **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
   na TUI) preserva por clipe `captions.ass`, `captions.srt`,
   `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem +

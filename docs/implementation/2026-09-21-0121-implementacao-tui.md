@@ -40,5 +40,5 @@ transcrição, render, modelos, limites).
 `core/peaks.py`, `core/preflight.py`, `core/finish.py`, `core/alignment.py`,
 `core/cache.py`, `core/tui.py`, `README.md`, `tests/test_progress.py`,
 `tests/test_tui.py`, `tests/test_consolidate.py`,
-`docs/20260921_0121_implementacao_tui.md`.
-Sem dependências novas. Base: `docs/20260921_0034_auditoria_tui.md`.
+`docs/implementation/2026-09-21-0121-implementacao-tui.md`.
+Sem dependências novas. Base: `docs/audits/2026-09-21-0034-auditoria-tui.md`.
