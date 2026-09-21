@@ -437,6 +437,23 @@ usa LLM próprio só para nomear o momento. `--regenerate-title` /
 `--regenerate-captions` forçam cada um (transcript intacto); `--review`
 abre a revisão pré-burn-in (edição regenera só as legendas).
 
+## Revisão do FINISH (antes de queimar)
+
+`--review` mostra o clip com transcript, título, início da legenda e preview
+**sem nada queimado**, sobre os artefatos (`transcript/title/captions.json`):
+
+```text
+[A] aceitar   [E] editar legenda   [R] regenerar
+[T] título on/off   [L] legenda on/off   [S] pular   [Q] sair
+```
+
+`E` edita texto e timestamps (registrado em `review.json`; `transcript.json`
+nunca muda em silêncio); `R` regenera só título ou só legenda, sem Whisper;
+`T`/`L` desligam título/legenda só deste render (artefatos preservados);
+`S` pula sem erro; `Q` persiste e continua depois. O render só acontece após
+o aceite, a saída é validada (existe, tem bytes, duração confere) e só então
+vale qualquer limpeza — que nunca é automática.
+
 Detalhes: `--custom-words vocab.json` (`{"words": [...]}`) aplica correção de
 palavra inteira após transcrever (whisper.cpp não tem prompting de vocabulário;
 o mecanismo é pós-processamento exato e registrado). Títulos com palavras fora

@@ -222,13 +222,17 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                no_captions: bool = False, no_title: bool = False,
                caption_mode: str = "phrases", vertical: bool = True,
                regen_title: bool = False, regen_captions: bool = False,
-               force_transcribe: bool = False, review: bool = False) -> dict:
+               force_transcribe: bool = False, review: bool = False,
+               review_input_fn=None) -> dict:
     """Orquestra o FINISH. Gera SOMENTE o pedido; reutiliza o resto.
 
     only: all (título+legenda+render) | title | captions | render.
     title e captions são independentes: pedir um nunca gera o outro.
-    review=True (só com render): preview limpo + A/E/S/Q antes do burn-in;
-    edição na revisão regenera as legendas (transcript.json intacto).
+    review=True (só com render): tela A/E/R/T/L/S/Q sobre os artefatos, com o
+    vídeo ainda sem nada queimado; edição na revisão regenera as legendas
+    (transcript.json intacto e registrado); render só depois do aceite, com
+    saída validada antes de qualquer limpeza (que nunca é automática).
+    review_input_fn: costura de teste (None = terminal real).
     Levanta RuntimeError com mensagem clara (CLI converte em sys.exit).
     """
     from .config import DEFAULT_MODEL
@@ -291,10 +295,15 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
         return result
 
     # render (all|render): revisão opcional antes do burn-in.
+    with_title = not no_title
+    with_captions = not no_captions
     if review:
         from . import clipreview as _cr
+        from . import finishreview as _fr
         from .models import Candidate, Segment
-        dur = max((s.end for s in segs), default=0.0)
+        from .video import highlight_words_from_title as _hl
+        from .backends import probe_duration as _probe_dur
+        dur = _probe_dur(clip) or max((s.end for s in segs), default=0.0)
         words = [w for s in segs for w in s.words]
         c = Candidate(start=0.0, end=dur,
                       text=" ".join(s.text for s in segs), words=list(words),
@@ -302,26 +311,102 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                       title=(title or {}).get("title", ""),
                       speech_rate=round(len(words) / max(0.5, dur), 2))
         session = _cr.session_dir(clip)
-        previews = _cr.build_previews(clip, [c], session, vertical=vertical)
-        kept, _, _ = _cr.run([c], clip, session, previews)
-        if not kept:
+        # Nome próprio: preview_01.mp4 é da revisão DISCOVERY (outros bounds)
+        # e seria reaproveitado errado pelo skip-if-exists.
+        preview = session / "preview_finish.mp4"
+        if not preview.exists():
+            print(f"   -> preview de revisão (sem queimar nada): {preview.name}")
+            cut_clip(clip, c, preview, vertical=vertical, captions=False,
+                     title=False)
+        previews = [preview]
+        review_state = {"edited_words": None}
+
+        def _edit() -> bool:
+            from pathlib import Path as _P
+            path = session / "finish_words.txt"
+            _cr.dump_clip_words(c, path)
+            print(f"   Edite: {path.resolve}\n"
+                  f"   (texto E timestamps absolutos; transcript.json NÃO muda)")
+            pause = review_input_fn or input
+            try:
+                pause("   Enter quando terminar (Ctrl+C cancela)...")
+            except EOFError:
+                raise SystemExit("Entrada não-interativa: revisão exige terminal.")
+            before = [(w.text, w.start, w.end) for w in c.words]
+            try:
+                _cr.apply_clip_words(c, path)
+            except RuntimeError as e:
+                print(f"   ! edição inválida ({e}) — nada mudou")
+                return False
+            changed = [(w.text, w.start, w.end) for w in c.words] != before
+            if changed:
+                review_state["edited_words"] = list(c.words)
+                print("   -> EDIÇÃO MANUAL registrada: vale p/ as legendas deste "
+                      "render; transcript.json original preservado")
+            return changed
+
+        def _regen_title():
+            t, _ = make_title(clip, segs, store, fp, model, force=True)
+            title.clear()
+            title.update(t)
+            print(f"   -> título regenerado: {title['title']!r}")
+            return title["title"]
+
+        def _regen_captions():
+            cp, _ = make_captions(
+                segs, store, fp, clip, caption_mode=caption_mode,
+                vertical=vertical,
+                highlight=_hl((title or {}).get("title", "")),
+                hook_title=(title or {}).get("title") if with_title else None,
+                force=True)
+            print("   -> legendas regeneradas (transcript intacto)")
+            return cp.get("srt", "")
+
+        outcome = _fr.run_review(
+            clip, segs, (title or {}).get("title"),
+            (caps or {}).get("srt"), dur, store, fp,
+            preview=previews[0] if previews else None,
+            regen_title_fn=_regen_title if with_title else None,
+            regen_captions_fn=_regen_captions if with_captions else None,
+            edit_fn=_edit if with_captions else None,
+            input_fn=review_input_fn)
+        if outcome["action"] == "skipped":
             raise RuntimeError("Clip pulado na revisão — nada a renderizar.")
-        c = kept[0]
-        if [ (w.text, w.start, w.end) for w in c.words ] != \
-           [ (w.text, w.start, w.end) for w in words ]:
-            # Edição humana: vale p/ este render; transcript.json intacto.
-            segs = [Segment(text=c.text, start=0.0, end=dur, words=list(c.words))]
-            if not no_captions:
+        st = outcome["state"]
+        with_title = with_title and st.get("title_enabled", True)
+        with_captions = with_captions and st.get("captions_enabled", True)
+        if review_state["edited_words"] is not None:
+            segs = [Segment(text=c.text, start=0.0, end=dur,
+                            words=list(c.words))]
+            if with_captions:
                 caps, _ = make_captions(
                     segs, store, fp, clip, caption_mode=caption_mode,
-                    vertical=vertical,
-                    highlight=highlight_words_from_title(c.title),
-                    hook_title=c.title if not no_title else None, force=True)
+                    vertical=vertical, highlight=_hl(c.title),
+                    hook_title=c.title if with_title else None, force=True)
                 print("   -> legendas regeneradas do texto revisado")
+        result["review"] = {"action": outcome["action"],
+                            "edited": bool(st.get("edited", False)),
+                            "title_enabled": with_title,
+                            "captions_enabled": with_captions}
     out = out_dir / (Path(clip).stem + "_final.mp4")
     render_clip(clip, segs, title, out, vertical=vertical,
-                with_captions=not no_captions, with_title=not no_title,
+                with_captions=with_captions, with_title=with_title,
                 caption_mode=caption_mode)
+    _validate_output(out, clip)
     print(f"FINAL: {out.resolve()}")
     result.update({"out": str(out), "title": (title or {}).get("title", "")})
     return result
+
+
+def _validate_output(out: Path, clip: str) -> None:
+    """Render validado ANTES de qualquer limpeza: existe, tem bytes e dura
+    o esperado. Falha aqui nunca apaga artefatos (nada apaga nada sozinho)."""
+    from .backends import probe_duration as _probe
+    if not out.exists() or out.stat().st_size == 0:
+        raise RuntimeError(f"render inválido: {out} vazio/ausente — "
+                           f"artefatos preservados em {out.parent}")
+    expected = _probe(clip)
+    got = _probe(str(out))
+    if expected and got and abs(got - expected) > max(2.0, 0.2 * expected):
+        raise RuntimeError(f"render com duração suspeita ({got:.1f}s vs "
+                           f"{expected:.1f}s do clip) — artefatos preservados")

@@ -22,12 +22,13 @@ import re
 import time
 from pathlib import Path
 
-ARTIFACT_VERSIONS = {"transcript": 1, "title": 1, "captions": 1}
+ARTIFACT_VERSIONS = {"transcript": 1, "title": 1, "captions": 1, "review": 1}
 # Config que invalida cada artefato quando muda (além do fingerprint).
 ARTIFACT_CONFIG_KEYS = {
     "transcript": (),
     "title": ("model",),
     "captions": ("caption_mode", "vertical"),
+    "review": (),
 }
 
 
@@ -50,8 +51,9 @@ def _path(store: Path | str, kind: str) -> Path:
 def transcript_hash(segments: list) -> str:
     """SHA1 canônico dos segmentos — amarra título/legenda ao transcript exato."""
     from .models import Segment  # noqa: F401 (garante tipo no caller)
-    canon = [(s.text, round(s.start, 3), round(s.end, 3),
-              tuple((w.text, round(w.start, 3), round(w.end, 3)) for w in s.words))
+    canon = [(s.text, round(float(s.start), 3), round(float(s.end), 3),
+              tuple((w.text, round(float(w.start), 3), round(float(w.end), 3))
+                    for w in s.words))
              for s in segments]
     return hashlib.sha1(json.dumps(canon, ensure_ascii=False).encode()).hexdigest()[:16]
 
