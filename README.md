@@ -105,7 +105,7 @@ A TUI monta a **mesma configuração** da CLI (nada é reimplementado):
 lista `videos/` para escolher a entrada (ou caminho manual), 9 modelos de
 scoring (`config/models.json`, só LLMs de texto verificados), backend,
 números (validados: `--top` > 0, `--pad` 0–5 etc.), modo das legendas
-(`words`/`intervals` com ←→), `[x] Legenda *ÁUDIO ESTOURADO*`, arquivo de
+(`phrases`/`words`/`intervals` com ←→), `[x] Legenda *ÁUDIO ESTOURADO*`, arquivo de
 risadas, checkboxes
 (`[x] Vídeo vertical` = sem `--no-vertical`), contexto/examples e cache.
 Antes de executar há uma tela de confirmação com o resumo **e o comando CLI
@@ -235,20 +235,43 @@ Evidência medida (2026-09-19, medium, trechos de 30 s):
 | `--context 5` (fronteira 30 s) | **diverge** (Δ médio ~0,56 s) — sem benefício medido aqui |
 | presets em áudio clipado 90 s (`compressed/denoised/declipped`) | 0 deg em todos, mas +27 extras com Δ~0,6–0,8 s e confiança menor (0.72–0.75 vs 0.84) — assinatura de alucinação, **nada vira default** |
 
-### Laboratório de legendas (words vs intervals)
+### Legendas por frases (conteúdo × apresentação)
+
+A legenda acompanha **unidades naturais de fala**, não grupos arbitrários:
+
+```text
+words do Whisper (timestamps individuais)
+        ↓
+core/phrases.py — CONTEÚDO: que palavras formam cada frase
+        ↓
+core/video.py — APRESENTAÇÃO: SRT/ASS, quebra de linha, lanes, highlight
+```
+
+Regras do agrupamento (`phrases`, padrão): fronteira de frase (`.!?`) quebra,
+exceto continuação próxima (gap ≤ 3 s + minúscula/conjunção/"…"); pausa interna
+real (≥ 0,8 s) vira `…` (`Eu achei que… você tinha entendido`); vozes
+concorrentes nunca se misturam; palavra nunca parte; sem esticar tempo, sem
+redistribuir uniformemente, sem limite de caracteres como critério de corte.
+Cada frase carrega `word_spans` (texto/início/fim por palavra) para destaque
+da palavra ativa no futuro. Alternativas: `--caption-mode words` (blocos de
+leitura) ou `intervals` (rajadas).
 
 ```bash
 python clipper.py caption-lab video.mkv --start 0 --dur 30 --cache-dir /tmp/c
-# debug/caption-lab/<video>_0-30/{words.srt,intervals.srt,compare.json}
+# debug/caption-lab/<video>_0-30/{words.srt,intervals.srt,phrases.srt,compare.json}
 ```
 
-`--caption-mode intervals` agrupa por rajada de fala (pausas < 0.8 s não
+### Laboratório de legendas (words vs intervals vs phrases)
+
+`--caption-mode intervals` agrupa por rajada de fala (pausas < 0,8 s não
 quebram; rajadas > 10 s partem em fronteira de palavra) em vez de blocos de
-leitura (gap 0.4 s, 8 words, 48 chars). Medido: limpo 30 s → 15 cues/89% vs
-5 cues/95%, max 3.1 s vs 9.7 s; gameplay 60 s → 29 cues/99.9% vs 9/100%, max
-4.8 s vs 10.1 s; 0 palavras partidas nos dois (regra de fronteira vale nos
-dois modos). **Default segue `words`** — intervals é mais calmo, words é mais
-ritmado; a escolha final é de olho no vídeo renderizado, não na tabela.
+leitura (gap 0,4 s, 8 words, 48 chars). Medido: limpo 30 s → 15 cues/89% vs
+5 cues/95%, max 3,1 s vs 9,7 s; gameplay 60 s → 29 cues/99,9% vs 9/100%, max
+4,8 s vs 10,1 s; 0 palavras partidas nos dois (regra de fronteira vale nos
+três modos). Medido 2026-09-21 (DerrubandoKit 0–30, diálogo limpo):
+`phrases` = 7 cues/99,9% idênticas às do `words` (sem regressão em texto
+limpo; a vantagem aparece em fala fragmentada: frases unidas com `…` em vez
+de balões partidos). **Default é `phrases`**.
 
 ### Forced alignment (experimental, opt-in)
 
@@ -443,7 +466,7 @@ toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
 | `--no-vertical` | Mantém widescreen (1280px) | 9:16 |
 | `--no-captions` | Sem legenda queimada | legenda on |
 | `--no-title` | Sem título/hook queimado (independente das legendas) | título on |
-| `--caption-mode` | `words` (blocos de leitura) ou `intervals` (rajadas, experimental) | `words` |
+| `--caption-mode` | `phrases` (frases, padrão), `words` (blocos) ou `intervals` (rajadas, experimental) | `phrases` |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
 | `--min-score F` (0–10) | Score mínimo | 6.0 |
 | `--selection-mode` | `classic` (padrão calibrado) ou `peak` (experimental, clip ao redor do auge) | `classic` |

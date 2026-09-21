@@ -34,7 +34,7 @@ def full_cfg(**over):
         "debug_captions": True, "review_transcript": False,
         "review_titles": False, "review_clips": False, "work_dir": None, "custom_words": None,
         "acoustic_captions": False, "whisper_model": "medium", "laughs": None,
-        "caption_mode": "words", "align": "off", "selection_mode": "classic",
+        "caption_mode": "phrases", "align": "off", "selection_mode": "classic",
     }
     cfg.update(over)
     return cfg
@@ -118,6 +118,8 @@ class TestBooleans(unittest.TestCase):
 
     def test_caption_mode_cycles_and_syncs(self):
         ui = self._tui()
+        self.assertEqual(ui._get("caption_mode"), "phrases")
+        ui.caption_idx = 0
         self.assertEqual(ui._get("caption_mode"), "words")
         ui.caption_idx = 1
         self.assertEqual(ui._get("caption_mode"), "intervals")

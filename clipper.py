@@ -60,8 +60,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-vertical", action="store_true", help="Não recortar para 9:16")
     p.add_argument("--no-captions", action="store_true", help="Não queimar legendas")
     p.add_argument("--no-title", action="store_true", help="Não queimar o título/hook (independente das legendas)")
-    p.add_argument("--caption-mode", default="words", choices=["words", "intervals"],
-                   help="Agrupamento das legendas: words (blocos de leitura, padrão medido) ou intervals (rajadas de fala, experimental)")
+    p.add_argument("--caption-mode", default="phrases", choices=["words", "intervals", "phrases"],
+                   help="Agrupamento das legendas: phrases (frases/unidades de fala, padrão) "
+                        "words (blocos de leitura) ou intervals (rajadas de fala, experimental)")
     p.add_argument("--acoustic-captions", action="store_true",
                    help="Queima *ÁUDIO ESTOURADO* nos trechos com clipping (experimental, off)")
     p.add_argument("--laughs", default=None,
@@ -220,7 +221,7 @@ def cli_command(cfg: dict) -> str:
         parts.append("--no-title")
     if cfg.get("acoustic_captions"):
         parts.append("--acoustic-captions")
-    if cfg.get("caption_mode", "words") != "words":
+    if cfg.get("caption_mode", "phrases") != "phrases":
         parts += ["--caption-mode", cfg["caption_mode"]]
     if cfg.get("laughs"):
         parts += ["--laughs", cfg["laughs"]]
@@ -616,7 +617,7 @@ def run_pipeline(cfg: dict) -> None:
                     events = (events or []) + in_clip
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
                          debug_dir=debug_dir, acoustic_events=events,
-                         caption_mode=cfg.get("caption_mode", "words"),
+                         caption_mode=cfg.get("caption_mode", "phrases"),
                          title=not cfg.get("no_title", False))
             except Exception as e:
                 print(f"   ! Falha clipe {i}: {e}")

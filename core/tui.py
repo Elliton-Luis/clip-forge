@@ -18,7 +18,7 @@ from core.config import MIN_CLIP_SECONDS, MAX_CLIP_SECONDS
 MODELS_PATH = Path(__file__).resolve().parent.parent / "config" / "models.json"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".flv", ".mpg", ".mpeg"}
 BACKENDS = ["auto", "gpu", "vulkan", "openvino", "cpu"]
-CAPTION_MODES = ["words", "intervals"]
+CAPTION_MODES = ["words", "intervals", "phrases"]
 
 
 # ----------------------------------------------------------------------------
@@ -152,8 +152,8 @@ def validate_for_run(cfg: dict) -> list[str]:
         _resolve_model(cfg.get("whisper_model") or "medium")
     except RuntimeError as e:
         errs.append(f"Modelo Whisper inválido: {e}")
-    if (cfg.get("caption_mode") or "words") not in CAPTION_MODES:
-        errs.append("--caption-mode deve ser words|intervals")
+    if (cfg.get("caption_mode") or "phrases") not in CAPTION_MODES:
+        errs.append("--caption-mode deve ser words|intervals|phrases")
     if cfg.get("laughs") and not Path(cfg["laughs"]).expanduser().exists():
         errs.append(f"Arquivo de risadas não encontrado: {cfg['laughs']}")
     return errs
@@ -174,7 +174,7 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         ("Vertical", "sim" if not cfg.get("no_vertical") else "não"),
         ("Título", "sim" if not cfg.get("no_title") else "não"),
         ("Legendas", "sim" if not cfg.get("no_captions") else "não"),
-        ("Modo legenda", cfg.get("caption_mode") or "words"),
+        ("Modo legenda", cfg.get("caption_mode") or "phrases"),
         ("Audio features", "sim" if not cfg.get("no_audio_features") else "não"),
         ("Cache", cfg.get("cache_dir") or "desligado"),
     ]
@@ -246,8 +246,8 @@ class TUI:
         self.model_idx = default_model_index(models, cfg.get("model") or DEFAULT_MODEL)
         self.backend_idx = BACKENDS.index(cfg.get("transcribe_backend") or "auto") \
             if (cfg.get("transcribe_backend") or "auto") in BACKENDS else 0
-        self.caption_idx = CAPTION_MODES.index(cfg.get("caption_mode") or "words") \
-            if (cfg.get("caption_mode") or "words") in CAPTION_MODES else 0
+        self.caption_idx = CAPTION_MODES.index(cfg.get("caption_mode") or "phrases") \
+            if (cfg.get("caption_mode") or "phrases") in CAPTION_MODES else 0
         self.pos = 0
         self.msg = ""
         self.use_cache = bool(cfg.get("cache_dir"))

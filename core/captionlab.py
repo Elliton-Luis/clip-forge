@@ -77,7 +77,7 @@ def run(video: str, start: float, dur: float, cache_dir=None) -> Path:
         raise RuntimeError("trecho sem palavras (sem fala?)")
     end = start + dur
     both = {}
-    for mode in ("words", "intervals"):
+    for mode in ("words", "intervals", "phrases"):
         srt = build_srt(words, start, end, caption_mode=mode)
         (out / f"{mode}.srt").write_text(srt, encoding="utf-8")
         cues_abs = _group_cues(words, start, end, mode=mode)
@@ -88,7 +88,7 @@ def run(video: str, start: float, dur: float, cache_dir=None) -> Path:
                       "model": WHISPER_MODEL_SIZE}
     (out / "compare.json").write_text(json.dumps(both, ensure_ascii=False, indent=2),
                                       encoding="utf-8")
-    for mode in ("words", "intervals"):
+    for mode in ("words", "intervals", "phrases"):
         m = both[mode]
         print(f"[caption-lab] {mode:9s} cues={m['cues']} cobertura={m['coverage_ratio']:.1%} "
               f"maxcue={m['max_cue_dur']}s midword={m['midword_splits']} overlap={m['overlapping_cues']}")

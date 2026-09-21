@@ -279,11 +279,18 @@ def _group_cue_words(words: list, clip_start: float, clip_end: float,
        coexistentes com timestamps preservados (lanes resolvem a exibição).
     mode="intervals" (experimental, --caption-mode): agrupa por rajada de
     fala via group_interval_words; "words" é o default medido.
+    mode="phrases" (--caption-mode): unidades naturais de fala via
+    core/phrases.group_phrases (frases, nunca rajadas arbitrárias); o texto
+    da cue vem da frase (com "…" só em pausa real), nunca remontado.
     """
     if mode == "intervals":
         return group_interval_words(words, clip_start, clip_end)
+    if mode == "phrases":
+        from . import phrases as _ph
+        return [p.words for p in _ph.group_phrases(words, clip_start, clip_end)
+                if p.words]
     if mode != "words":
-        raise ValueError(f"caption_mode inválido: {mode!r} (words|intervals)")
+        raise ValueError(f"caption_mode inválido: {mode!r} (words|intervals|phrases)")
     words = sorted(valid_caption_words(words), key=lambda w: w.start)
     words = [w for w in words if w.end > clip_start and w.start < clip_end]
     has_boundaries = any(w.text[:1].isspace() for w in words if w.text)
@@ -351,17 +358,27 @@ def _group_cues(words: list, clip_start: float, clip_end: float,
     resolvem a exibição).
     """
     out: list[list] = []
-    for chunk_words in _group_cue_words(words, clip_start, clip_end, mode=mode):
-        if not chunk_words:
-            continue
-        s = chunk_words[0].start
-        e_real = chunk_words[-1].end
+    if mode == "phrases":
+        # Conteúdo vem da frase (texto com "…" só em pausa real); spans são
+        # os extremos reais das words — sem re-join, sem redistribuição.
+        from . import phrases as _ph
+        units = [(p.start, p.end, clean_caption_text(p.text))
+                 for p in _ph.group_phrases(words, clip_start, clip_end)
+                 if p.words and clean_caption_text(p.text)]
+    else:
+        units = []
+        for chunk_words in _group_cue_words(words, clip_start, clip_end, mode=mode):
+            if not chunk_words:
+                continue
+            units.append((chunk_words[0].start, chunk_words[-1].end,
+                          clean_caption_text(smart_join([w.text for w in chunk_words]))))
+    for s, e_real, txt in units:
         e = e_real
         if e <= s:
             e = s + CAPTION_MIN_DURATION
         if e - s < CAPTION_MIN_DURATION:
             e = s + CAPTION_MIN_DURATION
-        raw = clean_caption_text(smart_join([w.text for w in chunk_words])).upper()
+        raw = txt.upper()
         if raw:
             out.append([s, e, raw, e_real])
     for i in range(len(out) - 1):
@@ -400,12 +417,15 @@ def merge_event_cues(word_cues: list[tuple], event_cues: list[tuple]) -> list[tu
     return sorted(out, key=lambda c: (c[0], c[1]))
 
 
-def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[tuple]:
+def _split_lines(cues: list[tuple], clip_start: float, duration: float,
+                 subdivide_time: bool = True) -> list[tuple]:
     """Divide cues longas em (cs_rel, ce_rel, texto) já relativos e clampados.
 
     O piso visual (dur < 1.0s → 1.0s) nunca invade a próxima cue — mesma
     regra do _group_cues, aplicada na timeline relativa (o clamp absoluto
     poderia ser re-estendido aqui pelo max()).
+    subdivide_time=False (modo phrases): uma frase = uma cue, sem fatiar o
+    tempo uniformemente — o texto só quebra em linhas visuais.
     """
     out: list[tuple] = []
     for idx, (s_abs, e_abs, raw) in enumerate(cues):
@@ -419,6 +439,11 @@ def _split_lines(cues: list[tuple], clip_start: float, duration: float) -> list[
         if e <= s:
             continue
         wrapped = _wrap(raw)
+        if not subdivide_time:
+            text = "\n".join(wrapped)
+            if text:
+                out.append((s, e, text))
+            continue
         n_chunks = math.ceil(len(wrapped) / CAPTION_MAX_LINES_PER_CUE)
         for start in range(0, len(wrapped), CAPTION_MAX_LINES_PER_CUE):
             lines = wrapped[start:start + CAPTION_MAX_LINES_PER_CUE]
@@ -458,7 +483,8 @@ def build_srt(words: list, clip_start: float, clip_end: float | None = None,
     cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end,
                                                      mode=caption_mode),
                                          event_cues or []),
-                        clip_start, duration)
+                        clip_start, duration,
+                        subdivide_time=(caption_mode != "phrases"))
     out = [f"{i}\n{_srt_time(cs)} --> {_srt_time(ce)}\n{text}\n"
            for i, (cs, ce, text) in enumerate(cues, start=1)]
     return "\n".join(out)
@@ -643,7 +669,8 @@ def build_ass(words: list, clip_start: float, clip_end: float,
     cues = _split_lines(merge_event_cues(_group_cues(words, clip_start, clip_end,
                                                      mode=caption_mode),
                                          event_cues or []),
-                        clip_start, duration) if duration > 0 else []
+                        clip_start, duration,
+                        subdivide_time=(caption_mode != "phrases")) if duration > 0 else []
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -940,7 +967,8 @@ def _write_clip_debug(debug_dir, out_path: Path, c, subs: str, suffix: str,
     cues = _split_lines(merge_event_cues(_group_cues(c.words, c.start, c.end,
                                                      mode=caption_mode),
                                          event_cues or []),
-                        c.start, duration) if duration > 0 else []
+                        c.start, duration,
+                        subdivide_time=(caption_mode != "phrases")) if duration > 0 else []
     warns = validate_cues(c.words, c.start, c.end, cues)
     (d / "caption-debug.txt").write_text(
         render_caption_debug(Path(out_path).stem, c.start, c.end,
