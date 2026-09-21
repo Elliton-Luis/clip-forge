@@ -730,7 +730,8 @@ def main() -> None:
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
     if len(sys.argv) > 1 and sys.argv[1] in (
             "transcribe-lab", "lab-compare", "transcribe-approve", "finalize",
-            "caption-lab", "align-compare", "peak-compare", "finish", "reset"):
+            "caption-lab", "align-compare", "peak-compare", "finish",
+            "finish-batch", "finish-status", "reset"):
         from core import translab as _lab
         import argparse as _ap
         if sys.argv[1] == "reset":
@@ -841,6 +842,9 @@ def main() -> None:
                            help="Retranscreve o clip (último recurso)")
             q.add_argument("--review", action="store_true",
                            help="Revisa (A/E/S/Q) antes do burn-in (só com render)")
+            q.add_argument("--no-keep-artifacts", action="store_true",
+                           help="Após render validado, remove title/captions/review "
+                                "(transcript.json sempre preservado)")
             a = q.parse_args(sys.argv[2:])
             try:
                 _res = _fin.run_finish(
@@ -852,11 +856,94 @@ def main() -> None:
                     vertical=not a.no_vertical,
                     regen_title=a.regenerate_title or a.force,
                     regen_captions=a.regenerate_captions or a.force,
-                    force_transcribe=a.force_transcribe, review=a.review)
+                    force_transcribe=a.force_transcribe, review=a.review,
+                    keep_artifacts=not a.no_keep_artifacts)
             except RuntimeError as e:
                 sys.exit(str(e))
             if a.only == "title":
                 print(f"TÍTULO: {_res.get('title', '')}")
+            return
+        if sys.argv[1] == "finish-batch":
+            # Lote: vários clips brutos, reutilizando tudo pronto, sem parar no erro.
+            from core import finish as _fb
+            from core.config import DEFAULT_MODEL as _dm2
+            q = _ap.ArgumentParser(
+                description="FINISH em lote sobre uma pasta de clips (reutiliza "
+                            "artefatos prontos; continua após falha individual).")
+            q.add_argument("clips_dir", help="Pasta com os clips (.mp4/.mkv/...)")
+            q.add_argument("--out", default="cortes", help="Pasta de saída")
+            q.add_argument("--only", default="all",
+                           choices=["all", "title", "captions", "render"])
+            q.add_argument("--model", default=_dm2, help="Modelo NIM p/ título")
+            q.add_argument("--whisper-model", default=None,
+                           help="Modelo Whisper (só se precisar transcrever)")
+            q.add_argument("--no-captions", action="store_true")
+            q.add_argument("--no-title", action="store_true")
+            q.add_argument("--caption-mode", default="phrases",
+                           choices=["words", "intervals", "phrases"])
+            q.add_argument("--no-vertical", action="store_true")
+            q.add_argument("--regenerate-title", action="store_true")
+            q.add_argument("--regenerate-captions", action="store_true")
+            q.add_argument("--no-keep-artifacts", action="store_true",
+                           help="Após cada render validado, remove intermediários "
+                                "(transcript.json sempre preservado)")
+            a = q.parse_args(sys.argv[2:])
+            import glob as _glob
+            found = sorted(p for ext in ("*.mp4", "*.mkv", "*.mov", "*.webm", "*.m4v")
+                           for p in _glob.glob(str(Path(a.clips_dir) / ext)))
+            if not found:
+                sys.exit(f"Nenhum clip em {a.clips_dir}")
+            print(f"[finish-batch] {len(found)} clips (só gera o que falta)...")
+            res = _fb.batch_finish(
+                found, out_dir=a.out, only=a.only, model=a.model,
+                whisper_model=a.whisper_model, no_captions=a.no_captions,
+                no_title=a.no_title, caption_mode=a.caption_mode,
+                vertical=not a.no_vertical,
+                regen_title=a.regenerate_title,
+                regen_captions=a.regenerate_captions,
+                keep_artifacts=not a.no_keep_artifacts)
+            ok = sum(1 for r in res if r["ok"])
+            for r in res:
+                tag = "OK " if r["ok"] else "FALHA"
+                print(f"  [{tag}] {Path(r['clip']).name}"
+                      + (f" → {r.get('title', '')}" if r["ok"] else f": {r.get('error')}"))
+            print(f"[finish-batch] {ok}/{len(res)} prontos.")
+            if ok != len(res):
+                sys.exit(f"{len(res) - ok} clip(s) falharam (ver acima).")
+            return
+        if sys.argv[1] == "finish-status":
+            # Status barato: nunca Whisper/LLM/ffmpeg, só lê envelopes + stat.
+            from core import finish as _fs
+            from core.config import DEFAULT_MODEL as _dm3
+            q = _ap.ArgumentParser(
+                description="Status dos artefatos por clip "
+                            "([✓] transcript/title/captions + veredito).")
+            q.add_argument("clips", nargs="+", help="Clips e/ou pastas")
+            q.add_argument("--out", default=None, help="Pasta de finais p/ RENDERED")
+            q.add_argument("--store-dir", default=None, help="Dir de artefatos")
+            q.add_argument("--model", default=_dm3)
+            q.add_argument("--caption-mode", default="phrases",
+                           choices=["words", "intervals", "phrases"])
+            q.add_argument("--no-vertical", action="store_true")
+            a = q.parse_args(sys.argv[2:])
+            targets = []
+            for t in a.clips:
+                p = Path(t)
+                if p.is_dir():
+                    import glob as _glob2
+                    targets += sorted(
+                        x for ext in ("*.mp4", "*.mkv", "*.mov", "*.webm", "*.m4v")
+                        for x in _glob2.glob(str(p / ext)))
+                else:
+                    targets.append(str(p))
+            for t in targets:
+                st = _fs.clip_status(t, store=a.store_dir, out_dir=a.out,
+                                     model=a.model, caption_mode=a.caption_mode,
+                                     vertical=not a.no_vertical)
+                marks = " ".join(
+                    f"[{'✓' if st['states'].get(k) == 'ready' else ' '}] {k}"
+                    for k in ("transcript", "title", "captions"))
+                print(f"{Path(t).name:40s} {marks}  → {st['verdict']}")
             return
         if sys.argv[1] == "transcribe-approve":
             q = _ap.ArgumentParser(

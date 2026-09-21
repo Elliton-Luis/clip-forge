@@ -223,7 +223,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                caption_mode: str = "phrases", vertical: bool = True,
                regen_title: bool = False, regen_captions: bool = False,
                force_transcribe: bool = False, review: bool = False,
-               review_input_fn=None) -> dict:
+               review_input_fn=None, keep_artifacts: bool = True) -> dict:
     """Orquestra o FINISH. Gera SOMENTE o pedido; reutiliza o resto.
 
     only: all (título+legenda+render) | title | captions | render.
@@ -236,7 +236,6 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
     Levanta RuntimeError com mensagem clara (CLI converte em sys.exit).
     """
     from .config import DEFAULT_MODEL
-    from .video import highlight_words_from_title
     model = model or DEFAULT_MODEL
     if only not in ("all", "title", "captions", "render"):
         raise ValueError(f"only inválido: {only!r}")
@@ -279,11 +278,12 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
         return result
 
     caps = None
+    # Legenda é irmã do título: artefato SEM hook/destaque de título, para
+    # que trocar o título invalide só title (+render futuro, que aplica o
+    # título na hora via cut). Hook/destaque vivem no render, não no .json.
     if not no_captions and only in ("all", "captions", "render"):
         caps, reused = make_captions(
             segs, store, fp, clip, caption_mode=caption_mode, vertical=vertical,
-            highlight=highlight_words_from_title((title or {}).get("title", "")),
-            hook_title=(title or {}).get("title") if not no_title else None,
             force=regen_captions)
         result["captions_reused"] = reused
     if only == "captions":
@@ -301,7 +301,6 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
         from . import clipreview as _cr
         from . import finishreview as _fr
         from .models import Candidate, Segment
-        from .video import highlight_words_from_title as _hl
         from .backends import probe_duration as _probe_dur
         dur = _probe_dur(clip) or max((s.end for s in segs), default=0.0)
         words = [w for s in segs for w in s.words]
@@ -355,10 +354,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
         def _regen_captions():
             cp, _ = make_captions(
                 segs, store, fp, clip, caption_mode=caption_mode,
-                vertical=vertical,
-                highlight=_hl((title or {}).get("title", "")),
-                hook_title=(title or {}).get("title") if with_title else None,
-                force=True)
+                vertical=vertical, force=True)
             print("   -> legendas regeneradas (transcript intacto)")
             return cp.get("srt", "")
 
@@ -381,8 +377,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
             if with_captions:
                 caps, _ = make_captions(
                     segs, store, fp, clip, caption_mode=caption_mode,
-                    vertical=vertical, highlight=_hl(c.title),
-                    hook_title=c.title if with_title else None, force=True)
+                    vertical=vertical, force=True)
                 print("   -> legendas regeneradas do texto revisado")
         result["review"] = {"action": outcome["action"],
                             "edited": bool(st.get("edited", False)),
@@ -395,7 +390,103 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
     _validate_output(out, clip)
     print(f"FINAL: {out.resolve()}")
     result.update({"out": str(out), "title": (title or {}).get("title", "")})
+    if not keep_artifacts:
+        _cleanup_intermediates(clip, store)
     return result
+
+
+def _cleanup_intermediates(clip: str, store: Path | str) -> list[str]:
+    """Pós-render validado + flag explícita: remove intermediários
+    (title/captions/review + preview). transcript.json NUNCA sai — sem ele,
+    qualquer operação futura pagaria Whisper de novo. Nada aqui é automático:
+    só roda com --no-keep-artifacts, só após render validado."""
+    from . import clipreview as _cr
+    removed = []
+    for name in ("title.json", "captions.json", "review.json"):
+        p = Path(store) / name
+        try:
+            if p.exists():
+                p.unlink()
+                removed.append(name)
+        except OSError:
+            pass
+    try:
+        prev = _cr.session_dir(clip) / "preview_finish.mp4"
+        if prev.exists():
+            prev.unlink()
+            removed.append("preview_finish.mp4")
+    except OSError:
+        pass
+    if removed:
+        print(f"   -> limpeza (--no-keep-artifacts): {', '.join(removed)} "
+              f"(transcript.json preservado)")
+    return removed
+
+
+def clip_status(clip: str, store: Path | str | None = None,
+                out_dir: str | Path | None = None,
+                model: str | None = None, caption_mode: str = "phrases",
+                vertical: bool = True,
+                whisper_model: str | None = None) -> dict:
+    """Status sem gerar nada (sem Whisper/LLM/ffmpeg): estados por artefato +
+    veredito READY (pronto p/ render) | NEEDS-* | RENDERED | STALE."""
+    from .config import DEFAULT_MODEL, WHISPER_MODEL_SIZE
+    store = Path(store).expanduser() if store else art.store_dir(clip)
+    fp = _fp(clip, whisper_model or WHISPER_MODEL_SIZE)
+    thash = None
+    states: dict[str, str] = {}
+    try:
+        data = art.load_artifact(store, "transcript", fp)
+        segs = art.deserialize_segments(data["segments"])
+        if data.get("transcript_hash") == art.transcript_hash(segs):
+            thash = data["transcript_hash"]
+            states["transcript"] = "ready"
+        else:
+            states["transcript"] = "invalid"
+    except art.InvalidArtifact as e:
+        states["transcript"] = "missing" if "ausente" in str(e) else "invalid"
+    states["title"], _ = art.artifact_state(
+        store, "title", fp, {"model": model or DEFAULT_MODEL}, thash)
+    states["captions"], _ = art.artifact_state(
+        store, "captions", fp,
+        {"caption_mode": caption_mode, "vertical": vertical}, thash)
+    verdict = "READY"
+    missing = [k for k, v in states.items() if v != "ready"]
+    if missing:
+        verdict = "NEEDS-" + "+".join(missing).upper()
+    final = None
+    if out_dir is not None:
+        final = str(Path(out_dir) / (Path(clip).stem + "_final.mp4"))
+        arts = [str(Path(store) / f"{k}.json") for k in
+                ("transcript", "title", "captions")]
+        fstate, _ = art.final_state(final, arts)
+        if fstate == "rendered":
+            verdict = "RENDERED"
+        elif fstate == "stale":
+            verdict = "STALE"
+        elif verdict == "READY":
+            verdict = "READY"
+    return {"clip": clip, "states": states, "verdict": verdict, "final": final}
+
+
+def batch_finish(clips: list[str], out_dir: str | Path = "cortes",
+                 **kwargs) -> list[dict]:
+    """FINISH em lote: reutiliza tudo pronto, continua após falha individual.
+    Retorna um resumo por clip (ok / error). Nunca aborta o lote no primeiro erro."""
+    results = []
+    for clip in sorted(clips):
+        try:
+            res = run_finish(clip, out_dir=out_dir, **kwargs)
+            results.append({"clip": clip, "ok": True,
+                            "title": res.get("title", ""),
+                            "out": res.get("out")})
+        except SystemExit as e:
+            results.append({"clip": clip, "ok": False,
+                            "error": f"interrompido: {e}"})
+        except Exception as e:
+            results.append({"clip": clip, "ok": False,
+                            "error": f"{type(e).__name__}: {e}"})
+    return results
 
 
 def _validate_output(out: Path, clip: str) -> None:

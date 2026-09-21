@@ -36,6 +36,21 @@ class InvalidArtifact(Exception):
     """Artefato ausente ou inválido — motivo em str(e). Gerar só o que falta."""
 
 
+# Grafo de invalidação (irmãos não se invalidam; tudo deriva do transcript,
+# que deriva do source):
+#   source mudou → transcript, title, captions, review
+#   transcript mudou → title, captions, review (hash amarra)
+#   title mudou → SÓ title (+ render futuro, que aplica o título na hora)
+#   captions mudou → SÓ captions (+ render futuro)
+# Dependências para checagem:
+DEPENDS_ON = {
+    "transcript": (),
+    "title": ("transcript",),
+    "captions": ("transcript",),
+    "review": ("transcript",),
+}
+
+
 def store_dir(source_path: str, root: Path | str = Path("work")) -> Path:
     """work/<stem>/artifacts — mesma convenção das sessões de revisão."""
     stem = re.sub(r"[^\w\-]+", "_", Path(source_path).stem).strip("_") or "clip"
@@ -107,6 +122,44 @@ def load_artifact(store: Path | str, kind: str, source_fp: str,
     if not isinstance(data, dict):
         raise InvalidArtifact(f"{kind}.json sem dados")
     return data
+
+
+def artifact_state(store: Path | str, kind: str, source_fp: str,
+                   config: dict | None = None,
+                   transcript_hash: str | None = None) -> tuple[str, str]:
+    """Estado sem gerar nada (nunca Whisper/LLM/ffmpeg): (estado, detalhe).
+
+    ready | missing | invalid:<motivo>. title/captions/review ainda conferem
+    o hash do transcript vigente — transcript trocado invalida os derivados,
+    mas título nunca invalida legenda e vice-versa (irmãos).
+    """
+    try:
+        data = load_artifact(store, kind, source_fp, config)
+    except InvalidArtifact as e:
+        reason = str(e)
+        if "ausente" in reason:
+            return "missing", reason
+        return "invalid", reason
+    if kind in ("title", "captions", "review") and transcript_hash is not None:
+        if data.get("transcript_hash") != transcript_hash:
+            return "invalid", f"{kind}.json de outro transcript"
+    return "ready", "ok"
+
+
+def final_state(final_path: Path | str, artifact_paths: list) -> tuple[str, str]:
+    """RENDERED (existe e não é mais velho que os artefatos) | STALE | MISSING."""
+    from pathlib import Path as _P
+    p = _P(final_path)
+    if not p.exists() or p.stat().st_size == 0:
+        return "missing", "sem render"
+    try:
+        newest = max(_P(a).stat().st_mtime for a in artifact_paths
+                     if _P(a).exists())
+    except ValueError:
+        newest = 0.0
+    if p.stat().st_mtime < newest:
+        return "stale", "artefatos mais novos que o render"
+    return "rendered", "ok"
 
 
 def serialize_segments(segments: list) -> list:

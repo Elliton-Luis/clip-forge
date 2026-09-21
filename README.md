@@ -437,6 +437,16 @@ usa LLM próprio só para nomear o momento. `--regenerate-title` /
 `--regenerate-captions` forçam cada um (transcript intacto); `--review`
 abre a revisão pré-burn-in (edição regenera só as legendas).
 
+```bash
+python clipper.py finish-batch clips/ --out final/   # lote, reutiliza tudo
+python clipper.py finish-status clip.mp4 --out final/
+# clip.mp4  [✓] transcript [✓] title [ ] captions  → NEEDS-CAPTIONS
+```
+
+Invalidação (só o afetado regenera): título→só title; legenda→só captions;
+transcript→title+captions; source→tudo. `--no-keep-artifacts` remove
+title/captions/review após render validado (`transcript.json` sempre fica).
+
 ## Revisão do FINISH (antes de queimar)
 
 `--review` mostra o clip com transcript, título, início da legenda e preview
