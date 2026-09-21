@@ -50,8 +50,11 @@ def session_dir(video_path: str, work_root: Path = WORK_ROOT) -> Path:
 def save_transcript(segments: list[Segment], path: Path, status: str = DRAFT) -> None:
     data = {"status": status, "segments": [
         {"text": s.text, "start": s.start, "end": s.end,
+         "timestamp_source": getattr(s, "timestamp_source", "whisper"),
          "words": [{"text": w.text, "start": w.start, "end": w.end,
-                    "p": getattr(w, "prob", None)} for w in s.words]}
+                    "p": getattr(w, "prob", getattr(w, "confidence", None)),
+                    "timestamp_source": getattr(w, "timestamp_source", "whisper")}
+                   for w in s.words]}
         for s in segments]}
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -62,12 +65,15 @@ def load_transcript(path: Path) -> tuple[list[Segment], str]:
         data = json.loads(path.read_text(encoding="utf-8"))
         segs = []
         for s in data.get("segments", []):
-            words = [Word(w["text"], float(w["start"]), float(w["end"]))
+            words = [Word(w["text"], float(w["start"]), float(w["end"]),
+                          confidence=w.get("p", w.get("confidence")),
+                          timestamp_source=w.get("timestamp_source", "whisper") or "whisper")
                      for w in s.get("words", [])]
             for w, raw in zip(words, s.get("words", [])):
-                w.prob = raw.get("p")  # type: ignore[attr-defined]
+                w.prob = raw.get("p", raw.get("confidence"))  # type: ignore[attr-defined]
             segs.append(Segment(text=s.get("text", ""), start=float(s.get("start", 0)),
-                                end=float(s.get("end", 0)), words=words))
+                                end=float(s.get("end", 0)), words=words,
+                                timestamp_source=s.get("timestamp_source", "whisper") or "whisper"))
         return segs, data.get("status", DRAFT)
     except (OSError, ValueError, KeyError, TypeError) as e:
         raise RuntimeError(f"transcrição inválida em {path}: {e}")

@@ -28,8 +28,14 @@ def load_transcript(cache_dir: Path, fp: str):
         data = json.loads(p.read_text(encoding="utf-8"))
         segs = []
         for s in data.get("segments", []):
-            words = [Word(w["text"], w["start"], w["end"]) for w in s.get("words", [])]
-            segs.append(Segment(text=s["text"], start=s["start"], end=s["end"], words=words))
+            words = []
+            for w in s.get("words", []):
+                ww = Word(w["text"], w["start"], w["end"],
+                          confidence=w.get("confidence"),
+                          timestamp_source=w.get("timestamp_source", "whisper") or "whisper")
+                words.append(ww)
+            segs.append(Segment(text=s["text"], start=s["start"], end=s["end"], words=words,
+                                timestamp_source=s.get("timestamp_source", "whisper") or "whisper"))
         print(f"   -> cache hit: transcrição {p} ({len(segs)} segmentos)")
         return segs
     except Exception as e:
@@ -45,7 +51,11 @@ def save_transcript(cache_dir: Path, fp: str, segments: list) -> None:
             "fingerprint": fp,
             "segments": [
                 {"text": s.text, "start": s.start, "end": s.end,
-                 "words": [{"text": w.text, "start": w.start, "end": w.end} for w in s.words]}
+                 "timestamp_source": getattr(s, "timestamp_source", "whisper"),
+                 "words": [{"text": w.text, "start": w.start, "end": w.end,
+                            "confidence": getattr(w, "confidence", None),
+                            "timestamp_source": getattr(w, "timestamp_source", "whisper")}
+                           for w in s.words]}
                 for s in segments
             ],
         }

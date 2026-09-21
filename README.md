@@ -243,6 +243,33 @@ leitura (gap 0.4 s, 8 words, 48 chars). Medido: limpo 30 s → 15 cues/89% vs
 dois modos). **Default segue `words`** — intervals é mais calmo, words é mais
 ritmado; a escolha final é de olho no vídeo renderizado, não na tabela.
 
+### Forced alignment (experimental, opt-in)
+
+O Whisper escreve o texto; o alignment só re-mede *quando* cada palavra foi
+dita (texto nunca muda). Desligado por padrão — o pipeline sem a flag é
+byte-idêntico ao de antes.
+
+```bash
+python clipper.py live.mp4 --out cortes/ --align whisper-refine   # sem deps novas (B580)
+python clipper.py live.mp4 --out cortes/ --align wav2vec2         # exige torch+transformers
+python clipper.py align-compare video.mkv --start 0 --dur 30 --backend wav2vec2
+# debug/alignment-lab/<video>_0-30_<backend>/{whisper,aligned,compare}.json + compare.txt
+```
+
+| Backend | O que faz | Custo |
+|---|---|---|
+| `whisper-refine` | Re-decode do próprio Whisper em janela curta + casamento de sequência | Segundos na B580, zero deps |
+| `wav2vec2` | CTC real (`jonatasgrosman/wav2vec2-large-xlsr-53-portuguese`, 315 M) | ~0,7 RTF em CPU, download único ~1,2 GB |
+
+Regras: cada word carrega `timestamp_source` (`whisper` ou
+`forced_alignment`) e `confidence` opcional; sem confiança mínima (0.3) ou
+span implausível (< 40 ms), o fallback mantém o Whisper e registra o motivo
+— nenhum timestamp é fabricado. Sem `torch`/`transformers`, `wav2vec2` cai
+para Whisper com erro explícito. Decisão entre opções, precisão esperada e
+limites em `docs/alignment-investigation.md`; números medidos em
+`docs/alignment-experiment.md` (resumo honesto: em gameplay ruidoso o gate
+barrou 100% — zero inventado, zero ganho fingido).
+
 ### Áudio estourado (detecção, sem adivinhação)
 
 `core/acoustic.py` detecta clipping digital sustentado (peak ≥ 0.99 + rms ≥

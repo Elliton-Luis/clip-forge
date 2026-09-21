@@ -9,3 +9,10 @@ psutil>=5.9.0
 #   A) OpenVINO (recomendado, pip puro): pip install openvino optimum-intel transformers soundfile
 #   B) whisper.cpp com Vulkan (binário externo + modelo ggml; ver README § Intel Arc)
 openvino>=2024.0; sys_platform == "linux"
+
+# --- Forced alignment (opt-in, --align wav2vec2) — pesado, OPCIONAL ---
+# Sem estes pacotes, o backend wav2vec2 faz fallback controlado ao Whisper
+# (nunca corrompe, erro explícito). whisper-refine não precisa de nada novo.
+# torch>=2.0
+# transformers>=4.30
+# soundfile>=0.12

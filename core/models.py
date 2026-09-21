@@ -11,6 +11,10 @@ class Word:
     text: str
     start: float
     end: float
+    confidence: float | None = None
+    # Origem do timestamp: "whisper" (default, caminho produtivo inalterado)
+    # ou "forced_alignment" (só quando o aligner re-mediu a palavra).
+    timestamp_source: str = "whisper"
 
 
 @dataclass
@@ -19,6 +23,7 @@ class Segment:
     start: float
     end: float
     words: list = field(default_factory=list)
+    timestamp_source: str = "whisper"
 
 
 @dataclass

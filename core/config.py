@@ -37,6 +37,10 @@ CLIPPER_DEVICE = os.environ.get("CLIPPER_DEVICE", _SAFE["device"])
 CLIPPER_RAM_LIMIT_GB = _int_env("CLIPPER_RAM_LIMIT_GB", _SAFE["ram_limit_gb"])
 # Backend de transcrição: auto|vulkan|openvino|cpu (auto = GPU Intel primeiro, CPU fallback explícito)
 CLIPPER_TRANSCRIBE_BACKEND = os.environ.get("CLIPPER_TRANSCRIBE_BACKEND", "auto").lower()
+# Forced alignment opt-in: off|whisper-refine|wav2vec2 (off = pipeline inalterado).
+# whisper-refine reusa o próprio Whisper em janela curta (B580, sem deps novas);
+# wav2vec2 exige torch+transformers (fallback controlado sem eles).
+CLIPPER_ALIGN = os.environ.get("CLIPPER_ALIGN", "off").lower()
 # Filtro ffmpeg aplicado SOMENTE ao áudio de transcrição (nunca ao vídeo
 # final). Ex: "highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11". Vazio = off.
 # Medido em áudio estourado: sem ganho demonstrável (clipping não se recupera)

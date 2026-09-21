@@ -21,7 +21,7 @@ from core.config import (
     DEFAULT_MODEL, DEFAULT_PAD_SECONDS, DEFAULT_MIN_SCORE, DEFAULT_MAX_PER_10MIN,
     MIN_CLIP_SECONDS, MAX_CLIP_SECONDS,
     CLIPPER_TRANSCRIBE_BACKEND, CLIPPER_CPU_THREADS, CLIPPER_FFMPEG_THREADS,
-    WHISPER_MODEL_SIZE,
+    WHISPER_MODEL_SIZE, CLIPPER_ALIGN,
 )
 from core.preflight import check as preflight
 from core.cache import fingerprint
@@ -94,6 +94,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Sessão de revisão (work/<video>): usa a transcrição APROVADA e pula o Whisper (regeneração)")
     p.add_argument("--custom-words", default=None,
                    help="JSON de vocabulário ({\"words\": [...]}) aplicado como correção exata pós-transcrição")
+    p.add_argument("--align", default=CLIPPER_ALIGN,
+                   choices=["off", "whisper-refine", "wav2vec2"],
+                   help="Forced alignment opt-in (padrão: env CLIPPER_ALIGN ou off; "
+                        "whisper-refine reusa o próprio Whisper em janela curta, sem deps novas)")
     return p
 
 
@@ -114,6 +118,7 @@ CONFIG_FIELDS = (
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
     "review_transcript", "review_titles", "work_dir", "custom_words",
+    "align",
 )
 
 
@@ -156,6 +161,7 @@ def config_from_args(args) -> dict:
         "review_titles": bool(args.review_titles),
         "work_dir": args.work_dir,
         "custom_words": args.custom_words,
+        "align": getattr(args, "align", "off"),
     }
 
 
@@ -178,6 +184,11 @@ def validate_config(cfg: dict) -> None:
         _resolve_model(cfg.get("whisper_model") or WHISPER_MODEL_SIZE)
     except RuntimeError as e:
         sys.exit(f"--whisper-model inválido: {e}")
+    try:
+        from core.alignment import resolve_backend as _resolve_align
+        _resolve_align(cfg.get("align", "off"))
+    except ValueError as e:
+        sys.exit(f"--align inválido: {e}")
 
 
 def cli_command(cfg: dict) -> str:
@@ -236,6 +247,8 @@ def cli_command(cfg: dict) -> str:
         parts += ["--work-dir", cfg["work_dir"]]
     if cfg.get("custom_words"):
         parts += ["--custom-words", cfg["custom_words"]]
+    if cfg.get("align", "off") != "off":
+        parts += ["--align", cfg["align"]]
     return " ".join(shlex.quote(x) for x in parts)
 
 
@@ -436,6 +449,18 @@ def run_pipeline(cfg: dict) -> None:
                                       model_size=cfg["whisper_model"])
             if cfg.get("review_transcript") and not cfg.get("work_dir"):
                 segments = _pause_for_transcript_review(cfg, video, segments)
+            if cfg.get("align", "off") != "off":
+                # Forced alignment opt-in: só re-mede timestamps (texto intacto),
+                # com fallback controlado ao Whisper. Scoring/seleção/corte
+                # continuam idênticos — consomem os mesmos Segment/Word.
+                from core.alignment import align_segments as _align
+                segments, _astats = _align(
+                    segments, audio_path=video, backend=cfg.get("align"),
+                    model_size=cfg["whisper_model"], language=None)
+                try:
+                    metrics.stages["alignment"] = _astats.time_sec
+                except Exception:
+                    pass
         stage = "candidates"
         with metrics.stage("candidates"):
             from core.backends import probe_duration as _probe
@@ -607,7 +632,7 @@ def main() -> None:
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
     if len(sys.argv) > 1 and sys.argv[1] in (
             "transcribe-lab", "lab-compare", "transcribe-approve", "finalize",
-            "caption-lab", "reset"):
+            "caption-lab", "align-compare", "reset"):
         from core import translab as _lab
         import argparse as _ap
         if sys.argv[1] == "reset":
@@ -647,6 +672,22 @@ def main() -> None:
             q.add_argument("--cache-dir", default=None, help="Cache (ex: .cache/clipper)")
             a = q.parse_args(sys.argv[2:])
             _cl.run(a.video, a.start, a.dur, cache_dir=a.cache_dir)
+            return
+        if sys.argv[1] == "align-compare":
+            from core import alignlab as _al
+            q = _ap.ArgumentParser(
+                description="Compara timestamps Whisper vs forced alignment num trecho real.")
+            q.add_argument("video", help="Vídeo de entrada")
+            q.add_argument("--start", type=float, default=0.0, help="Início (s)")
+            q.add_argument("--dur", type=float, default=30.0, help="Duração (s)")
+            q.add_argument("--backend", default="whisper-refine",
+                           choices=["whisper-refine", "wav2vec2"],
+                           help="Backend de alignment (padrão: whisper-refine)")
+            q.add_argument("--whisper-model", default=WHISPER_MODEL_SIZE,
+                           help=f"Modelo ggml-* em models/ (padrão: {WHISPER_MODEL_SIZE})")
+            a = q.parse_args(sys.argv[2:])
+            _al.run(a.video, a.start, a.dur, backend=a.backend,
+                    model_size=a.whisper_model)
             return
         if sys.argv[1] == "transcribe-approve":
             q = _ap.ArgumentParser(
