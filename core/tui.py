@@ -192,6 +192,8 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         rows.append(("Revisão", "transcrição (pausa p/ editar)"))
     if cfg.get("review_titles"):
         rows.append(("Revisão", "títulos (pausa p/ editar)"))
+    if cfg.get("review_clips"):
+        rows.append(("Revisão", "clips antes do burn-in (A/E/S/Q)"))
     if cfg.get("work_dir"):
         rows.append(("Sessão", str(cfg["work_dir"])))
     if cfg.get("acoustic_captions"):
@@ -280,6 +282,7 @@ class TUI:
             ("debug_captions", "Debug de legendas (avançado)", "bool"),
             ("review_transcript", "Revisar transcrição (pausa p/ editar)", "bool"),
             ("review_titles", "Revisar títulos (pausa p/ editar)", "bool"),
+            ("review_clips", "Revisar clips antes do burn-in", "bool"),
             ("work_dir", "Sessão de revisão (work/..., avançado)", "text"),
             ("custom_words", "Vocabulário customizado (JSON, avançado)", "text"),
             ("process", "[ PROCESSAR ]", "action"),
@@ -327,6 +330,8 @@ class TUI:
             self.cfg["review_transcript"] = not self.cfg.get("review_transcript", False)
         elif key == "review_titles":
             self.cfg["review_titles"] = not self.cfg.get("review_titles", False)
+        elif key == "review_clips":
+            self.cfg["review_clips"] = not self.cfg.get("review_clips", False)
         elif key == "acoustic_captions":
             self.cfg["acoustic_captions"] = not self.cfg.get("acoustic_captions", False)
 

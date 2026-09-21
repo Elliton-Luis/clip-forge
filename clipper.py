@@ -90,6 +90,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Pausa após transcrever p/ revisão humana (edita work/<video>/transcription/words.txt, aprova, continua sem re-rodar Whisper)")
     p.add_argument("--review-titles", action="store_true",
                    help="Pausa após scoring p/ revisar títulos (work/<video>/titles.txt, validados contra a transcrição)")
+    p.add_argument("--review-clips", action="store_true",
+                   help="Revisa os clips SELECIONADOS antes do burn-in (preview sem legenda + A/E/S/Q, continua de onde parou)")
     p.add_argument("--work-dir", default=None,
                    help="Sessão de revisão (work/<video>): usa a transcrição APROVADA e pula o Whisper (regeneração)")
     p.add_argument("--custom-words", default=None,
@@ -121,7 +123,7 @@ CONFIG_FIELDS = (
     "min_duration", "max_duration",
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
-    "review_transcript", "review_titles", "work_dir", "custom_words",
+    "review_transcript", "review_titles", "review_clips", "work_dir", "custom_words",
     "align", "selection_mode",
 )
 
@@ -163,6 +165,7 @@ def config_from_args(args) -> dict:
         "debug_captions": bool(args.debug_captions),
         "review_transcript": bool(args.review_transcript),
         "review_titles": bool(args.review_titles),
+        "review_clips": bool(getattr(args, "review_clips", False)),
         "work_dir": args.work_dir,
         "custom_words": args.custom_words,
         "align": getattr(args, "align", "off"),
@@ -253,6 +256,8 @@ def cli_command(cfg: dict) -> str:
         parts.append("--review-transcript")
     if cfg.get("review_titles"):
         parts.append("--review-titles")
+    if cfg.get("review_clips"):
+        parts.append("--review-clips")
     if cfg.get("work_dir"):
         parts += ["--work-dir", cfg["work_dir"]]
     if cfg.get("custom_words"):
@@ -542,6 +547,27 @@ def run_pipeline(cfg: dict) -> None:
             if cfg.get("review_titles"):
                 selected = _pause_for_titles_review(cfg, video, segments, selected)
         metrics.set_counts(selected=len(selected))
+        _review_status = {}
+        if cfg.get("review_clips"):
+            # Último filtro humano antes do burn-in: só selecionados, preview
+            # limpo (sem legenda queimada), A/E/S/Q com estado persistido.
+            from core import clipreview as _cr
+            stage = "review"
+            _session = _cr.session_for(cfg, video)
+            _previews = _cr.build_previews(
+                video, selected, _session, vertical=not cfg["no_vertical"])
+            with metrics.stage("review"):
+                _reviewed, _statuses, _rstats = _cr.run(
+                    selected, video, _session, _previews)
+            _review_status = {}
+            _kept = iter(_reviewed)
+            for _st in _statuses:
+                if _st in ("accepted", "edited"):
+                    _review_status[id(next(_kept))] = _st
+            selected = _reviewed
+            if not selected:
+                sys.exit("Todos os clips foram pulados na revisão — nada a renderizar.")
+            metrics.set_counts(selected=len(selected))
         warn = _title_warnings(segments, selected)
         for i, w in warn.items():
             print(f"   ! clipe {i}: title_warnings={w}")
@@ -608,6 +634,8 @@ def run_pipeline(cfg: dict) -> None:
                 "highlight_warnings": warn.get(i, {}).get("highlight", []),
                 "acoustic_events": [{"type": e.type, "start": e.start, "end": e.end,
                                      "confidence": e.confidence} for e in (events or [])],
+                **({"review": _review_status.get(id(c), "accepted")}
+                   if cfg.get("review_clips") else {}),
                 **(({
                     "selection_mode": "peak",
                     "window_start": round(c.window_start, 1) if c.window_start is not None else None,

@@ -354,6 +354,26 @@ A transcrição aprovada é a fonte da verdade: scoring, títulos, legendas e
 cortes consomem ela, nunca o Whisper direto. Texto e timestamps são
 independentes (corrigir "dire ita"→"direita" não toca `start/end`).
 
+## Revisão de clips antes do burn-in
+
+Depois da seleção, `--review-clips` pausa para o último filtro humano: para
+cada clip selecionado (nunca dezenas de descartados) mostra título, score,
+duração, transcript com timestamps e um preview **sem legenda queimada**
+(`work/<video>/clipreview/preview_NN.mp4` — mesmo corte e áudio do final):
+
+```bash
+python clipper.py video.mkv --out cortes/ --review-clips
+# [A]ceitar  [E]ditar (texto/tempos, sem JSON manual)  [S]pular  [P]tocar  [Q]sair
+```
+
+`A` mantém tudo e vai ao burn-in; `E` abre `clip_NN_words.txt`
+(`[sNN] [MM:SS.mmm → MM:SS.mmm] texto`, timestamps absolutos) no `$EDITOR`
+para corrigir texto/tempos com validação — a legenda final é gerada do texto
+corrigido; `S` descarta sem erro; `Q`/Ctrl+C persiste
+(`decisions.json`: accepted/edited/skipped/pending) e o rerun continua de
+onde parou (candidatos diferentes arquivam em `decisions.bak.json`).
+Previews morrem com a sessão (`finalize`/`reset`); originais nunca são tocados.
+
 ```bash
 python clipper.py video.mkv --out cortes/ --review-transcript --review-titles
 # 1. transcreve → work/<video>/transcription/{transcript.json, words.txt}
@@ -432,6 +452,7 @@ toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
 | `--examples JSON` | Few-shot (ver `examples.json`, máx 4) | — |
 | `--review-transcript` | Pausa p/ revisar/aprovar transcrição (`work/`) | off |
 | `--review-titles` | Pausa p/ revisar títulos (`work/titles.txt`) | off |
+| `--review-clips` | Revisa selecionados antes do burn-in (preview limpo, A/E/S/Q) | off |
 | `--work-dir DIR` | Usa transcrição APROVADA, pula o Whisper | — |
 | `--custom-words JSON` | Vocabulário (`{"words": [...]}`), correção exata | — |
 

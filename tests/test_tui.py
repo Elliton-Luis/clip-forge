@@ -32,7 +32,7 @@ def full_cfg(**over):
         "min_score": 5.0, "max_per_10min": 1, "context": "ranked",
         "examples": "examples.json", "transcribe_backend": "vulkan",
         "debug_captions": True, "review_transcript": False,
-        "review_titles": False, "work_dir": None, "custom_words": None,
+        "review_titles": False, "review_clips": False, "work_dir": None, "custom_words": None,
         "acoustic_captions": False, "whisper_model": "medium", "laughs": None,
         "caption_mode": "words", "align": "off", "selection_mode": "classic",
     }
