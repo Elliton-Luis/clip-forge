@@ -23,8 +23,8 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 ## Como funciona
 
 1. **Transcrição** (local, offline) — whisper.cpp + Vulkan na B580 (padrão),
-   **sem VAD** (auditoria em `docs/caption-audit.md`: o VAD apagava ~24 s de
-   fala em gameplay e colapsava timestamps; ver também `docs/vad-experiment.md`);
+   **sem VAD** (auditoria em `docs/20260919_1006_caption-audit.md`: o VAD apagava ~24 s de
+   fala em gameplay e colapsava timestamps; ver também `docs/20260919_0813_vad-experiment.md`);
    fallback `faster-whisper` CPU int8 sem VAD, sempre com motivo explícito.
    Opcional: `CLIPPER_TRANSCRIBE_AUDIO_FILTER` (ex. loudnorm) aplicado só ao
    áudio da transcrição — off por padrão (sem ganho medido em áudio estourado).
@@ -46,7 +46,7 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
    ranqueia por intensidade do auge, suprime mesmo-momento por overlap de
    peaks e re-titula só os selecionados com grounding validado. Comparar com
    `python clipper.py peak-compare video.mkv --top 5 --cache-dir .cache/clipper`
-   (números em `docs/peak-experiment.md`: 90 s → ~21–32 s nos mesmos momentos).
+   (números em `docs/20260920_2213_peak-experiment.md`: 90 s → ~21–32 s nos mesmos momentos).
 6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
    composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
    vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
@@ -204,7 +204,7 @@ ausente, sysfs do driver `xe` sem contadores — `null` honesto).
 
 ### Laboratório de transcrição (sem VAD)
 
-`docs/vad-experiment.md` provou que o VAD prejudica timestamps (onset −0,67 s,
+`docs/20260919_0813_vad-experiment.md` provou que o VAD prejudica timestamps (onset −0,67 s,
 cauda colapsada, truncagem de ~22 s em gameplay). O lab compara estratégias
 **sem VAD** sobre o mesmo áudio, sem tocar o pipeline produtivo:
 
@@ -296,8 +296,8 @@ Regras: cada word carrega `timestamp_source` (`whisper` ou
 span implausível (< 40 ms), o fallback mantém o Whisper e registra o motivo
 — nenhum timestamp é fabricado. Sem `torch`/`transformers`, `wav2vec2` cai
 para Whisper com erro explícito. Decisão entre opções, precisão esperada e
-limites em `docs/alignment-investigation.md`; números medidos em
-`docs/alignment-experiment.md` (resumo honesto: em gameplay ruidoso o gate
+limites em `docs/20260920_2050_alignment-investigation.md`; números medidos em
+`docs/20260920_2109_alignment-experiment.md` (resumo honesto: em gameplay ruidoso o gate
 barrou 100% — zero inventado, zero ganho fingido).
 
 ### Áudio estourado (detecção, sem adivinhação)
@@ -413,6 +413,22 @@ python clipper.py video.mkv --out cortes/ --work-dir work/<video>  # pula o Whis
 python clipper.py finalize work/<video> --out cortes/  # confirma [Y/N], limpa
 ```
 
+## Artefatos reutilizáveis + FINISH
+
+Todo run persiste `work/<video>/artifacts/transcript.json` (fonte de verdade:
+texto, segmentos, palavras, timestamps). `title.json`/`captions.json` derivam
+dele com envelope de procedência (fingerprint origem+modelo+config); válido =
+reutiliza, ausente/inválido = gera só o que falta. Título/legenda/render
+nunca rodam Whisper:
+
+```bash
+python clipper.py finish clip.mp4 --out final/                    # tudo
+python clipper.py finish clip.mp4 --only title                    # só título
+python clipper.py finish clip.mp4 --only captions --out final/    # só .srt
+python clipper.py finish clip.mp4 --only render --out final/      # só render
+python clipper.py finish clip.mp4 --title "Meu Título" --only render --out final/
+```
+
 Detalhes: `--custom-words vocab.json` (`{"words": [...]}`) aplica correção de
 palavra inteira após transcrever (whisper.cpp não tem prompting de vocabulário;
 o mecanismo é pós-processamento exato e registrado). Títulos com palavras fora
@@ -523,7 +539,7 @@ python clipper.py live.mp4 --pad 1.2 --no-audio-features --min-score 5.0
   Whisper têm jitter natural (~0,5 s; chunking altera ~0,01–0,02 s) — sem
   offset global, sem VAD no caminho padrão.
   Desde a remoção do VAD do caminho padrão, a causa dominante de "legenda sem
-  som" (VAD apagando fala) não existe mais; ver `docs/caption-audit.md`.
+  som" (VAD apagando fala) não existe mais; ver `docs/20260919_1006_caption-audit.md`.
 - **Diagnóstico de legendas**: `--debug-captions` (ou `[x] Debug de legendas`
   na TUI) preserva por clipe `captions.ass`, `captions.srt`,
   `transcript-words.json` e `caption-debug.txt` (ABS→REL→CAP + checagem +

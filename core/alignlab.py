@@ -14,7 +14,7 @@ Método (nada toca o pipeline produtivo):
    compare.json, compare.txt} e imprime tabela palavra-por-palavra.
 
 Não declara vitória por "terminou sem erro": imprime deltas e deixa os
-números falarem (ver docs/alignment-experiment.md).
+números falarem (ver docs/20260920_2109_alignment-experiment.md).
 """
 import json
 import subprocess

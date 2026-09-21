@@ -1,6 +1,6 @@
 """alignment.py — forced alignment opt-in (Whisper continua dono do texto).
 
-Contrato (ver docs/alignment-investigation.md):
+Contrato (ver docs/20260920_2050_alignment-investigation.md):
 - Entrada: (áudio + segmentos do Whisper). Saída: mesmos textos, starts/ends
   re-medidos quando possível.
 - `Word.timestamp_source` / `Segment.timestamp_source` explicitam a origem:
@@ -34,7 +34,7 @@ ALIGN_VERSION = 1
 WAV2VEC2_PT_MODEL = "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese"
 REFINE_MARGIN_SEC = 1.5  # janela extra ao redor do segmento p/ re-decode
 REFINE_MIN_MATCH = 0.5  # fração mínima de palavras casadas p/ aceitar o segmento
-# Gate de qualidade CTC (calibrado no experimento docs/alignment-experiment.md):
+# Gate de qualidade CTC (calibrado no experimento docs/20260920_2109_alignment-experiment.md):
 # span abaixo disso NÃO é re-medição — é o modelo dizendo que a palavra não
 # está no áudio (alucinação do Whisper). Fallback ao Whisper, nunca clamp.
 WAV2VEC2_MIN_CONF = 0.3

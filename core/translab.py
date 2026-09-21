@@ -1,6 +1,6 @@
 """translab.py — laboratório A/B de transcrição (SEM VAD).
 
-Por que existe: os experimentos em docs/vad-experiment.md provaram que o VAD
+Por que existe: os experimentos em docs/20260919_0813_vad-experiment.md provaram que o VAD
 Silero prejudica timestamps (onset −0,67 s, cauda colapsada, truncagem de ~22 s
 em gameplay). Este laboratório compara estratégias **sem VAD** sobre o mesmo
 áudio, com métricas objetivas e artefatos reproduzíveis.

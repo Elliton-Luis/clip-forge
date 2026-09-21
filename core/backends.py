@@ -157,7 +157,7 @@ def _whisper_cmd(binary: str, model: Path, wav: Path, stem: Path,
                  language: str | None,
                  extra: list[str] | None = None) -> list[str]:
     """Comando whisper-cli. Puro e testável. SEM VAD por decisão experimental
-    (docs/vad-experiment.md + auditoria 2026-09: VAD adianta onset, colapsa
+    (docs/20260919_0813_vad-experiment.md + auditoria 2026-09: VAD adianta onset, colapsa
     caudas e apaga ~24 s de fala em gameplay) — nenhuma flag -vm/--vad aqui."""
     cmd = [binary, "-m", str(model), "-f", str(wav), "-ojf",
            "-of", str(stem), "-l", language or "auto", "-nt"]
@@ -234,7 +234,7 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
         else:
             raise RuntimeError(f"modelo {model} não encontrado — baixe de HuggingFace (ex: ggerganov/whisper.cpp)")
     segments: list[Segment] = []
-    print("   -> sem VAD (evidência: docs/vad-experiment.md)")
+    print("   -> sem VAD (evidência: docs/20260919_0813_vad-experiment.md)")
     retry_model = None
     if WHISPER_RETRY_MODEL and WHISPER_RETRY_MODEL.lower() not in ("off", "none"):
         retry_model = _resolve_model_file(WHISPER_RETRY_MODEL)
