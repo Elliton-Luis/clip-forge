@@ -240,7 +240,7 @@ seleção ou qualidade.
 `core/selection.py`, `core/video.py`, `core/candidates.py`,
 `core/cache.py`, `core/config.py`, `core/intel.py`, `core/metrics.py`,
 `core/acoustic.py`, `docs/audits/2026-09-19-1349-timing-root-cause.md`,
-`docs/experiments/2026-09-19-0813-vad-experiment.md` (parcial), `run.sh`, `cortes/manifest.json`.
+`docs/experiments/2026-09-19-0813-vad-experiment.md` (parcial), `scripts/run.sh`, `cortes/manifest.json`.
 
 **Medições realizadas:** `ffprobe` (AV1 1080p60 + 2× AAC, 6645 s,
 22 GB); `volumedetect` atual 27,7 s vs audio-only 0,14 s vs WAV local

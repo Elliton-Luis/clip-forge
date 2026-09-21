@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # run.sh — Atalho para rodar o clipper com padrões sensatos.
 #
-# Uso:
-#   ./run.sh                              # abre a interface interativa (TUI)
-#   ./run.sh video.mkv                    # 8 clipes em cortes/, com cache
-#   ./run.sh video.mkv --top 5            # 5 clipes
-#   ./run.sh video.mkv --out meus_cortes  # outra pasta de saída
-#   ./run.sh video.mkv --no-cache         # sem cache (não recomendado p/ vídeos grandes)
+# Uso (a partir da raiz do repo):
+#   ./scripts/run.sh                              # abre a interface interativa (TUI)
+#   ./scripts/run.sh video.mkv                    # 8 clipes em cortes/, com cache
+#   ./scripts/run.sh video.mkv --top 5            # 5 clipes
+#   ./scripts/run.sh video.mkv --out meus_cortes  # outra pasta de saída
+#   ./scripts/run.sh video.mkv --no-cache         # sem cache (não recomendado p/ vídeos grandes)
 #
 # Qualquer flag extra do clipper.py é repassada (ex: --model, --min-score).
 set -euo pipefail
 
-cd "$(dirname "$0")"
+# scripts/ → raiz do repo (clipper.py, .env).
+cd "$(dirname "$0")/.."
 
 if [ $# -lt 1 ]; then
     # Sem argumentos: interface interativa.

@@ -16,7 +16,8 @@ Clipper
 ├── tests/          → testes automatizados
 ├── docs/           → documentação ([índice](docs/README.md): architecture/,
 │                     experiments/, audits/, implementation/)
-├── scripts via run.sh, check_deps.sh, install_deps.sh; tools/ → smoke test GPU
+├── scripts/        → run.sh (roda), check_deps.sh (analisa), install_deps.sh (instala)
+├── tools/          → smoke test GPU
 ├── config/         → modelos de scoring (models.json); examples.json (few-shot)
 ├── videos/         → entradas locais (ignorado pelo git, ~70 GB)
 ├── cortes/         → clipes gerados + manifest.json (ignorado pelo git)
@@ -82,13 +83,13 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
 ## Uso rápido
 
 ```bash
-./run.sh video.mkv                    # 8 clipes em cortes/, com cache
-./run.sh video.mkv --top 5            # 5 clipes
-./run.sh video.mkv --out meus_cortes  # outra pasta
-./run.sh video.mkv --no-cache         # sem cache (só p/ teste rápido)
+./scripts/run.sh video.mkv                    # 8 clipes em cortes/, com cache
+./scripts/run.sh video.mkv --top 5            # 5 clipes
+./scripts/run.sh video.mkv --out meus_cortes  # outra pasta
+./scripts/run.sh video.mkv --no-cache         # sem cache (só p/ teste rápido)
 ```
 
-O `run.sh` liga o cache (`.cache/clipper`), carrega o `.env` sozinho e
+O `scripts/run.sh` liga o cache (`.cache/clipper`), carrega o `.env` sozinho e
 repassa qualquer flag do `clipper.py`. Equivalente manual:
 
 ```bash
@@ -106,7 +107,7 @@ cortes/
 └── manifest.json   # nota, título, hashtags, energy, speech_rate, snapped
 ```
 
-> Vídeo grande? Use **sempre** `--cache-dir` (o `run.sh` já faz isso): se algo
+> Vídeo grande? Use **sempre** `--cache-dir` (o `scripts/run.sh` já faz isso): se algo
 > cair no meio, re-rodar reusa transcrição + scores em vez de recomeçar do zero.
 
 ## Interface interativa (TUI)
@@ -516,7 +517,7 @@ transcrição (backend, tempo, RTF, segmentos), GPU/CPU/RAM (média/pico, `null`
 se indisponível), FFmpeg, API NVIDIA (requests/retries/latências/tokens;
 custo sempre `null`). Monitoramento: 1 thread, 1 amostra/2 s, só agregados.
 
-Cache (`--cache-dir`, ligado no `run.sh`): transcrição + scores por
+Cache (`--cache-dir`, ligado no `scripts/run.sh`): transcrição + scores por
 fingerprint `tamanho+mtime+modelo+idioma+versão-pipeline` — trocar o arquivo
 invalida sozinho; mudar a semântica da transcrição (`TRANSCRIPT_PIPELINE_VERSION`)
 invalida transcripts antigos (era VAD nunca volta por cache).

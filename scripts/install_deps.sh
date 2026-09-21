@@ -4,17 +4,17 @@
 # Para quem parte do zero e para quem já tem metade: cada etapa verifica
 # antes se precisa fazer algo e pula o que já está pronto (idempotente).
 #
-# Uso:
-#   ./install_deps.sh                    # tudo que faltar (padrão sensato)
-#   ./install_deps.sh --help             # esta ajuda
-#   ./install_deps.sh --dry-run          # só mostra o que faria, sem executar
-#   ./install_deps.sh --only python,models
-#   ./install_deps.sh --with-large        # + ggml-large-v3 (~3 GB, retry anti-alucinação)
-#   ./install_deps.sh --with-align        # + torch/transformers (forced alignment)
-#   ./install_deps.sh --venv .venv        # cria/usa venv em vez de --user
-#   ./install_deps.sh --rebuild           # recompila o whisper.cpp mesmo se funcionar
-#   ./install_deps.sh --skip-system       # pula sudo dnf
-#   ./install_deps.sh --skip-whisper-cpp  # pula clone/build do whisper.cpp
+# Uso (a partir da raiz do repo):
+#   ./scripts/install_deps.sh                    # tudo que faltar (padrão sensato)
+#   ./scripts/install_deps.sh --help             # esta ajuda
+#   ./scripts/install_deps.sh --dry-run          # só mostra o que faria, sem executar
+#   ./scripts/install_deps.sh --only python,models
+#   ./scripts/install_deps.sh --with-large        # + ggml-large-v3 (~3 GB, retry anti-alucinação)
+#   ./scripts/install_deps.sh --with-align        # + torch/transformers (forced alignment)
+#   ./scripts/install_deps.sh --venv .venv        # cria/usa venv em vez de --user
+#   ./scripts/install_deps.sh --rebuild           # recompila o whisper.cpp mesmo se funcionar
+#   ./scripts/install_deps.sh --skip-system       # pula sudo dnf
+#   ./scripts/install_deps.sh --skip-whisper-cpp  # pula clone/build do whisper.cpp
 #
 # Etapas: system | python | whisper-cpp | models
 

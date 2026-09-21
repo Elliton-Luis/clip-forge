@@ -2,9 +2,9 @@
 # check_deps.sh — verifica o que já está instalado para o Clipper (Fedora)
 # Não instala nada, não altera nada. Só relata.
 #
-# Uso:
-#   ./check_deps.sh          # resumo + exit 0 (essencial ok) / 1 (falta essencial)
-#   ./check_deps.sh --verbose
+# Uso (a partir da raiz do repo):
+#   ./scripts/check_deps.sh          # resumo + exit 0 (essencial ok) / 1 (falta essencial)
+#   ./scripts/check_deps.sh --verbose
 #
 # Níveis: ESSENCIAL (falhar aqui = exit 1), GPU (só importa na B580),
 # OPCIONAL (nunca falha o check). Detecta venv (.venv ou $VIRTUAL_ENV).
