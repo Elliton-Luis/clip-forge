@@ -6,6 +6,38 @@ clipes cortados em 9:16 com legenda queimada, prontos pra postar.
 
 Sem custo: Whisper local (na sua GPU) + tier grátis da NVIDIA Build.
 
+## Sumário
+
+- [Estrutura do repositório](#estrutura-do-repositório)
+- [O que faz](#o-que-faz)
+- [Como funciona](#como-funciona)
+- [Uso rápido](#uso-rápido)
+- [Interface interativa (TUI)](#interface-interativa-tui)
+- [Acompanhamento no terminal](#acompanhamento-no-terminal)
+- [Instalação](#instalação)
+- [Transcrição e GPU (Intel Arc B580)](#transcrição-e-gpu-intel-arc-b580)
+  - [Benchmark medido (60 s de áudio, Whisper medium, esta máquina)](#benchmark-medido-60-s-de-áudio-whisper-medium-esta-máquina)
+  - [Como o backend Vulkan funciona](#como-o-backend-vulkan-funciona)
+  - [Laboratório de transcrição (sem VAD)](#laboratório-de-transcrição-sem-vad)
+  - [Legendas por frases (conteúdo × apresentação)](#legendas-por-frases-conteúdo--apresentação)
+  - [Laboratório de legendas (words vs intervals vs phrases)](#laboratório-de-legendas-words-vs-intervals-vs-phrases)
+  - [Forced alignment (experimental, opt-in)](#forced-alignment-experimental-opt-in)
+  - [Áudio estourado (detecção, sem adivinhação)](#áudio-estourado-detecção-sem-adivinhação)
+  - [Duração dos clips](#duração-dos-clips)
+  - [Falas simultâneas](#falas-simultâneas)
+- [Scoring e modelos](#scoring-e-modelos)
+  - [Concorrência do scoring](#concorrência-do-scoring)
+- [Revisão humana da transcrição](#revisão-humana-da-transcrição)
+- [Revisão de clips antes do burn-in](#revisão-de-clips-antes-do-burn-in)
+- [Artefatos reutilizáveis + FINISH](#artefatos-reutilizáveis--finish)
+- [Revisão do FINISH (antes de queimar)](#revisão-do-finish-antes-de-queimar)
+- [Métricas e cache](#métricas-e-cache)
+- [CLI completa](#cli-completa)
+- [Ajustando pro seu conteúdo](#ajustando-pro-seu-conteúdo)
+- [Diagnóstico](#diagnóstico)
+- [Limitações conhecidas](#limitações-conhecidas)
+  - [Título e legendas independentes](#título-e-legendas-independentes)
+
 ## Estrutura do repositório
 
 ```text
