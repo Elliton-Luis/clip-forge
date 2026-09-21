@@ -31,6 +31,27 @@ Regra absoluta: use SOMENTE palavras, pessoas, fatos e acontecimentos presentes 
 Responda SOMENTE JSON: {"title": "...", "hashtags": "#tag1 #tag2 #tag3"}"""
 
 
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
+
 def _fp(clip: str, whisper_model: str | None) -> str:
     return fingerprint(clip, whisper_model)
 
@@ -38,7 +59,7 @@ def _fp(clip: str, whisper_model: str | None) -> str:
 def ensure_transcript(clip: str, store: Path | str,
                       whisper_model: str | None = None,
                       backend: str | None = None,
-                      force: bool = False) -> tuple[list, bool]:
+                      force: bool = False, progress=None) -> tuple[list, bool]:
     """Transcript válido do store, ou transcreve o CLIP uma vez e salva.
 
     Retorna (segments, reused). Whisper roda no máximo 1× aqui — e nunca nas
@@ -54,23 +75,23 @@ def ensure_transcript(clip: str, store: Path | str,
             if data.get("transcript_hash") != art.transcript_hash(segs):
                 raise art.InvalidArtifact("transcript.json adulterado "
                                           "(hash divergente)")
-            print(f"   -> transcript reutilizado ({len(segs)} segmentos, sem Whisper)")
+            _say(progress, f"   -> transcript reutilizado ({len(segs)} segmentos, sem Whisper)")
             return segs, True
         except art.InvalidArtifact as e:
-            print(f"   ! {e} — transcrevendo o clip uma vez")
+            _warn(progress, f"   ! {e} — transcrevendo o clip uma vez")
     segs = transcribe(clip, cache_dir=None, force=True, backend=backend,
-                      metrics=None, model_size=wm)
+                      metrics=None, model_size=wm, progress=progress)
     art.save_artifact(store, "transcript", fp, clip,
                       {"whisper_model": wm, "backend": backend},
                       {"segments": art.serialize_segments(segs),
                        "transcript_hash": art.transcript_hash(segs),
                        "meta": {"segments": len(segs),
                                 "words": sum(len(s.words) for s in segs)}})
-    print(f"   -> transcript do clip salvo ({len(segs)} segmentos)")
+    _say(progress, f"   -> transcript do clip salvo ({len(segs)} segmentos)")
     return segs, False
 
 
-def _title_llm(text: str, model: str) -> dict:
+def _title_llm(text: str, model: str, progress=None) -> dict:
     """Um título via LLM direto — NÃO passa pelo scoring de descoberta.
 
     O scoring avalia N candidatos para SELECIONAR; aqui o momento já está
@@ -105,14 +126,14 @@ def _title_llm(text: str, model: str) -> dict:
                     "score": None, "reason": "finish-llm"}
         except Exception as e:
             last = e
-            print(f"      ! título LLM tentativa {attempt+1}/3: {e}")
+            _detail(progress, f"      ! título LLM tentativa {attempt+1}/3: {e}")
             if attempt < 2:
                 _t.sleep([10, 30][attempt])
     raise RuntimeError(f"LLM não gerou título para o clip ({last})")
 
 
 def make_title(clip: str, segments: list, store: Path | str, source_fp: str,
-               model: str, force: bool = False) -> tuple[dict, bool]:
+               model: str, force: bool = False, progress=None) -> tuple[dict, bool]:
     """Título do clip a partir do transcript (Whisper e scoring proibidos)."""
     from .review import validate_grounding
     thash = art.transcript_hash(segments)
@@ -121,17 +142,17 @@ def make_title(clip: str, segments: list, store: Path | str, source_fp: str,
             data = art.load_artifact(store, "title", source_fp, {"model": model})
             if data.get("transcript_hash") != thash:
                 raise art.InvalidArtifact("title.json de outro transcript")
-            print(f"   -> título reutilizado: {data['title']!r}")
+            _say(progress, f"   -> título reutilizado: {data['title']!r}")
             return data, True
         except art.InvalidArtifact as e:
-            print(f"   ! {e} — gerando título")
+            _warn(progress, f"   ! {e} — gerando título")
     text = " ".join(s.text for s in segments).strip()
     if not text:
         raise RuntimeError("transcript vazio — sem o que titular")
-    got = _title_llm(text, model)
+    got = _title_llm(text, model, progress)
     bad = validate_grounding(got["title"], text)
     if bad:
-        print(f"   ! título com palavras fora do transcript: {bad}")
+        _warn(progress, f"   ! título com palavras fora do transcript: {bad}")
     data = {**got, "model": model, "transcript_hash": thash,
             "title_source": "llm"}
     art.save_artifact(store, "title", source_fp, clip, {"model": model}, data)
@@ -154,7 +175,7 @@ def make_captions(segments: list, store: Path | str, source_fp: str,
                   source_path: str, caption_mode: str = "phrases",
                   vertical: bool = True, highlight: set | None = None,
                   hook_title: str | None = None,
-                  force: bool = False) -> tuple[dict, bool]:
+                  force: bool = False, progress=None) -> tuple[dict, bool]:
     """Legendas (srt+ass) a partir do transcript. Funções puras, sem Whisper."""
     from .video import build_srt, build_ass
     from .backends import probe_duration as _probe
@@ -165,11 +186,11 @@ def make_captions(segments: list, store: Path | str, source_fp: str,
             data = art.load_artifact(store, "captions", source_fp, cfg)
             if data.get("transcript_hash") != thash:
                 raise art.InvalidArtifact("captions.json de outro transcript")
-            print("   -> legendas reutilizadas "
+            _say(progress, "   -> legendas reutilizadas "
                   f"({caption_mode}, {'vertical' if vertical else 'wide'})")
             return data, True
         except art.InvalidArtifact as e:
-            print(f"   ! {e} — gerando legendas")
+            _warn(progress, f"   ! {e} — gerando legendas")
     words = [w for s in segments for w in s.words]
     dur = max((s.end for s in segments), default=0.0)
     srt = build_srt(words, 0.0, dur if dur > 0 else None,
@@ -223,7 +244,9 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                caption_mode: str = "phrases", vertical: bool = True,
                regen_title: bool = False, regen_captions: bool = False,
                force_transcribe: bool = False, review: bool = False,
-               review_input_fn=None, keep_artifacts: bool = True) -> dict:
+               review_input_fn=None, keep_artifacts: bool = True,
+               progress=None, verbose: bool = False, quiet: bool = False,
+               log_file: str | None = None) -> dict:
     """Orquestra o FINISH. Gera SOMENTE o pedido; reutiliza o resto.
 
     only: all (título+legenda+render) | title | captions | render.
@@ -236,14 +259,25 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
     Levanta RuntimeError com mensagem clara (CLI converte em sys.exit).
     """
     from .config import DEFAULT_MODEL
+    from .progress import Progress
     model = model or DEFAULT_MODEL
     if only not in ("all", "title", "captions", "render"):
         raise ValueError(f"only inválido: {only!r}")
     store = Path(store).expanduser() if store else art.store_dir(clip)
     out_dir = Path(out_dir)
+    bus = progress if progress is not None else Progress(
+        mode="FINALIZAR CLIP", verbose=verbose, quiet=quiet, log_file=log_file)
+    try:
+        from .backends import probe_duration as _probe0
+        _dur0 = _probe0(clip)
+    except Exception:
+        _dur0 = None
+    bus.header([f"{Path(clip).name}" +
+                (f" · {_dur0:.0f}s" if _dur0 else "") +
+                f" → {only}"])
 
     segs, t_reused = ensure_transcript(clip, store, whisper_model=whisper_model,
-                                       force=force_transcribe)
+                                       force=force_transcribe, progress=bus)
     from .config import WHISPER_MODEL_SIZE
     fp = _fp(clip, whisper_model or WHISPER_MODEL_SIZE)
     result: dict = {"clip": clip, "transcript_reused": t_reused,
@@ -254,7 +288,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                   (only == "render" and not no_title)
     if title_text and only in ("all", "title", "render") and not no_title:
         title = set_manual_title(clip, segs, store, fp, title_text)
-        print(f"   -> título manual: {title['title']!r}")
+        bus.note(f"título manual: {title['title']!r}")
         result["title_reused"] = False
     elif needs_title:
         if only == "render":
@@ -269,12 +303,15 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
                     f"Render precisa de título: {e} "
                     f"(rode --only title ou passe --title/--no-title)")
         else:
+            bus.stage("title", "Título", total=1, unit="título")
             title, reused = make_title(clip, segs, store, fp, model,
-                                       force=regen_title)
+                                       force=regen_title, progress=bus)
             result["title_reused"] = reused
-            print(f"   -> título: {title['title']!r}")
+            bus.done("title", f"{title['title']!r} "
+                              f"({'reutilizado' if reused else 'gerado'})")
     if only == "title":
         result["title"] = (title or {}).get("title", "")
+        bus.close()
         return result
 
     caps = None
@@ -282,14 +319,17 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
     # que trocar o título invalide só title (+render futuro, que aplica o
     # título na hora via cut). Hook/destaque vivem no render, não no .json.
     if not no_captions and only in ("all", "captions", "render"):
+        bus.stage("captions", "Legenda", total=1, unit="legenda")
         caps, reused = make_captions(
             segs, store, fp, clip, caption_mode=caption_mode, vertical=vertical,
-            force=regen_captions)
+            force=regen_captions, progress=bus)
         result["captions_reused"] = reused
+        bus.done("captions", "reutilizada" if reused else "gerada")
     if only == "captions":
         out_dir.mkdir(parents=True, exist_ok=True)
         srt_p = out_dir / (Path(clip).stem + ".srt")
         srt_p.write_text((caps or {}).get("srt", ""), encoding="utf-8")
+        bus.close()
         print(f"LEGENDA: {srt_p.resolve()} (sem Whisper, sem render)")
         result["srt"] = str(srt_p)
         return result
@@ -314,7 +354,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
         # e seria reaproveitado errado pelo skip-if-exists.
         preview = session / "preview_finish.mp4"
         if not preview.exists():
-            print(f"   -> preview de revisão (sem queimar nada): {preview.name}")
+            bus.note(f"preview de revisão (sem queimar nada): {preview.name}")
             cut_clip(clip, c, preview, vertical=vertical, captions=False,
                      title=False)
         previews = [preview]
@@ -324,8 +364,7 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
             from pathlib import Path as _P
             path = session / "finish_words.txt"
             _cr.dump_clip_words(c, path)
-            print(f"   Edite: {path.resolve}\n"
-                  f"   (texto E timestamps absolutos; transcript.json NÃO muda)")
+            bus.note(f"Edite: {path.resolve} (texto e timestamps; transcript.json NÃO muda)")
             pause = review_input_fn or input
             try:
                 pause("   Enter quando terminar (Ctrl+C cancela)...")
@@ -335,30 +374,33 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
             try:
                 _cr.apply_clip_words(c, path)
             except RuntimeError as e:
-                print(f"   ! edição inválida ({e}) — nada mudou")
+                bus.warn(f"! edição inválida ({e}) — nada mudou")
                 return False
             changed = [(w.text, w.start, w.end) for w in c.words] != before
             if changed:
                 review_state["edited_words"] = list(c.words)
-                print("   -> EDIÇÃO MANUAL registrada: vale p/ as legendas deste "
-                      "render; transcript.json original preservado")
+                bus.note("EDIÇÃO MANUAL registrada: vale p/ as legendas deste render; transcript.json preservado")
             return changed
 
         def _regen_title():
-            t, _ = make_title(clip, segs, store, fp, model, force=True)
+            t, _ = make_title(clip, segs, store, fp, model, force=True, progress=bus)
             title.clear()
             title.update(t)
-            print(f"   -> título regenerado: {title['title']!r}")
+            bus.note(f"título regenerado: {title['title']!r}")
             return title["title"]
 
         def _regen_captions():
             cp, _ = make_captions(
                 segs, store, fp, clip, caption_mode=caption_mode,
-                vertical=vertical, force=True)
-            print("   -> legendas regeneradas (transcript intacto)")
+                vertical=vertical, force=True, progress=bus)
+            bus.note("legendas regeneradas (transcript intacto)")
             return cp.get("srt", "")
 
-        outcome = _fr.run_review(
+        from core.progress import review_banner as _rb
+        import sys as _sys
+        with bus.pause():
+            _rb(_sys.stdout, "REVISÃO DO CLIP", 1, 1)
+            outcome = _fr.run_review(
             clip, segs, (title or {}).get("title"),
             (caps or {}).get("srt"), dur, store, fp,
             preview=previews[0] if previews else None,
@@ -377,17 +419,20 @@ def run_finish(clip: str, out_dir: str | Path = "cortes", only: str = "all",
             if with_captions:
                 caps, _ = make_captions(
                     segs, store, fp, clip, caption_mode=caption_mode,
-                    vertical=vertical, force=True)
-                print("   -> legendas regeneradas do texto revisado")
+                    vertical=vertical, force=True, progress=bus)
+                bus.note("legendas regeneradas do texto revisado")
         result["review"] = {"action": outcome["action"],
                             "edited": bool(st.get("edited", False)),
                             "title_enabled": with_title,
                             "captions_enabled": with_captions}
     out = out_dir / (Path(clip).stem + "_final.mp4")
+    bus.stage("render", "Renderização", total=1, unit="clipe")
     render_clip(clip, segs, title, out, vertical=vertical,
                 with_captions=with_captions, with_title=with_title,
                 caption_mode=caption_mode)
     _validate_output(out, clip)
+    bus.done("render", out.name)
+    bus.close()
     print(f"FINAL: {out.resolve()}")
     result.update({"out": str(out), "title": (title or {}).get("title", "")})
     if not keep_artifacts:

@@ -9,6 +9,27 @@ import subprocess
 from .config import AUDIO_ENERGY_TIMEOUT, CLIPPER_FFMPEG_THREADS
 
 
+def _note(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(f"   -> {text}")
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(f"   ! {text}")
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(f"   -> {text}")
+
+
 def measure(video_path: str, start: float, end: float) -> str:
     duration = max(0.1, end - start)
     # Só áudio: -vn + -map 0:a:0 impedem o decode do vídeo (auditoria
@@ -41,20 +62,29 @@ def measure(video_path: str, start: float, end: float) -> str:
         return "media"
 
 
-def annotate(video_path: str, candidates: list, enable: bool = True) -> list:
+def annotate(video_path: str, candidates: list, enable: bool = True,
+             progress=None) -> list:
     if not enable:
-        print("   -> áudio desativado (--no-audio-features)")
+        _note(progress, "áudio desativado (--no-audio-features)")
         return candidates
     if not shutil.which("ffmpeg"):
-        print("   ! ffmpeg ausente — pulando energia (media)")
+        _warn(progress, "ffmpeg ausente — pulando energia (media)")
         return candidates
-    print(f"   -> medindo energia de {len(candidates)} candidatos...")
+    _detail(progress, f"medindo energia de {len(candidates)} candidatos...")
+    st = progress.stage("audio", "Energia", total=len(candidates),
+                        unit="candidatos") if progress is not None else None
     for c in candidates:
         dur = c.duration if c.duration > 0 else 1
         c.speech_rate = round(len(c.words) / dur, 2)
         c.energy = measure(video_path, c.start, c.end)
+        if st is not None:
+            progress.adv("audio", 1)
     from collections import Counter
     dist = Counter(c.energy for c in candidates)
     avg = statistics.mean([c.speech_rate for c in candidates]) if candidates else 0
-    print(f"      distribuição: {dict(dist)} | speech_rate médio: {avg:.2f} w/s")
+    summary = f"energia {dict(dist)} | speech_rate médio: {avg:.2f} w/s"
+    if st is not None:
+        progress.done("audio", summary)
+    else:
+        print(f"      distribuição: {dict(dist)} | speech_rate médio: {avg:.2f} w/s")
     return candidates

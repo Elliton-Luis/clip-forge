@@ -250,11 +250,32 @@ def _note_latency(stats: dict | None, lock, seconds: float) -> None:
         _add()
 
 
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
+
 def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int = 3,
                      stats: dict | None = None,
                      key_hint: int | None = None,
                      gates: list | None = None,
-                     lock=None) -> dict:
+                     lock=None, progress=None) -> dict:
     # clients: lista não-vazia de OpenAI. Caminho serial (key_hint None):
     # cada tentativa usa a próxima chave do rodízio global. Caminho paralelo:
     # o lote tem afinidade com a chave key_hint e só roda para a próxima em
@@ -296,11 +317,13 @@ def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int
             return result
         except json.JSONDecodeError as e:
             last = e
-            print(f"      ! JSON inválido (tentativa {attempt+1}/{retries}, "
+            _warn(progress,
+                  f"      ! JSON inválido (tentativa {attempt+1}/{retries}, "
                   f"chave {kidx+1}/{nkeys}): {e}")
         except Exception as e:
             last = e
-            print(f"      ! Erro NIM (tentativa {attempt+1}/{retries}, "
+            _warn(progress,
+                  f"      ! Erro NIM (tentativa {attempt+1}/{retries}, "
                   f"chave {kidx+1}/{nkeys}): {e}")
         _note_latency(stats, lock, time.time() - t0)
         if attempt == retries - 1:
@@ -313,18 +336,21 @@ def _call_with_retry(clients, model: str, batch: list, prompt: str, retries: int
             if rl_wait is not None:
                 _bump(stats, lock, "rate_limited")
                 if rl_wait != wait:
-                    print(f"        429 na chave {kidx+1}/{nkeys}: aguardando "
-                          f"{rl_wait:.0f}s (Retry-After)...")
+                    _detail(progress,
+                            f"        429 na chave {kidx+1}/{nkeys}: aguardando "
+                            f"{rl_wait:.0f}s (Retry-After)...")
                 else:
-                    print(f"        429 na chave {kidx+1}/{nkeys}: aguardando {wait}s...")
+                    _detail(progress,
+                            f"        429 na chave {kidx+1}/{nkeys}: aguardando {wait}s...")
                 time.sleep(rl_wait)
             else:
-                print(f"        aguardando {wait}s...")
+                _detail(progress, f"        aguardando {wait}s...")
                 time.sleep(wait)
     raise last  # type: ignore
 
 
-def _apply_batch_result(batch: list, id_map: dict, result: dict) -> None:
+def _apply_batch_result(batch: list, id_map: dict, result: dict,
+                        progress=None) -> None:
     """Associa respostas aos candidatos pelos ids (nunca por ordem de
     conclusão). Id ausente ou fora do lote = candidato `failed`."""
     ids = {idx for idx, _ in batch}
@@ -343,11 +369,11 @@ def _apply_batch_result(batch: list, id_map: dict, result: dict) -> None:
     for idx, c in batch:
         if idx not in seen:
             c.failed = True
-            print(f"      ! candidato {idx} sem retorno — sem nota")
+            _warn(progress, f"      ! candidato {idx} sem retorno — sem nota")
 
 
-def _fail_batch(batch: list, n: int, num: int, e: Exception) -> None:
-    print(f"   ! Falha lote {num}/{n}: {e}. Marcando sem nota.")
+def _fail_batch(batch: list, n: int, num: int, e: Exception, progress=None) -> None:
+    _warn(progress, f"   ! Falha lote {num}/{n}: {e}. Marcando sem nota.")
     for _, c in batch:
         c.failed = True
 
@@ -355,9 +381,15 @@ def _fail_batch(batch: list, n: int, num: int, e: Exception) -> None:
 def score(candidates: list, model: str = DEFAULT_MODEL,
           cache_dir: Path | None = None, fingerprint: str | None = None,
           force: bool = False, context: str | None = None, examples_path: str | None = None,
-          metrics=None) -> list:
+          metrics=None, progress=None) -> list:
+    if progress is not None:
+        # Total conhecido antes de começar (lotes sobre candidatos).
+        _nb = max(1, math.ceil(len(candidates) / SEGMENTS_PER_SCORING_CALL))
+        progress.stage("scoring", "Scoring", total=_nb, unit="lotes")
     if cache_dir and fingerprint and not force:
-        if load_scores(cache_dir, fingerprint, candidates):
+        if load_scores(cache_dir, fingerprint, candidates, progress):
+            if progress is not None:
+                progress.skip("scoring", "cache")
             if metrics is not None:
                 try:
                     metrics.set_nvidia(model=model, requests=0, successes=0,
@@ -378,13 +410,16 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
     # Um client por chave: rodízio por lote e por tentativa (nunca loga valores).
     clients = [OpenAI(base_url=NVIDIA_BASE_URL, api_key=k,
                       timeout=180, max_retries=0) for k in keys]
-    if len(clients) > 1:
+    if progress is None and len(clients) > 1:
         print(f"   -> rodízio entre {len(clients)} chaves NVIDIA (resiliência a quota/503)")
+    elif progress is not None:
+        progress.detail(f"rodízio entre {len(clients)} chaves NVIDIA")
     examples = _load_examples(examples_path)
     prompt = _build_prompt(SYSTEM_PROMPT, context, examples)
 
     n_batches = math.ceil(len(candidates) / SEGMENTS_PER_SCORING_CALL)
-    print(f"[3/5] Pontuando {len(candidates)} candidatos em {n_batches} chamada(s)...")
+    if progress is None:
+        print(f"[3/5] Pontuando {len(candidates)} candidatos em {n_batches} chamada(s)...")
     id_map = {idx: c for idx, c in enumerate(candidates)}
     stats = {"requests": 0, "successes": 0, "failures": 0, "retries": 0,
              "rate_limited": 0,
@@ -404,15 +439,24 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
         for num, batch in enumerate(batches, start=1):
             try:
                 result = _call_with_retry(clients, model, batch, prompt,
-                                          stats=stats, gates=gates)
+                                          stats=stats, gates=gates,
+                                          progress=progress)
             except Exception as e:
-                _fail_batch(batch, n_batches, num, e)
+                _fail_batch(batch, n_batches, num, e, progress)
+                if progress is not None:
+                    progress.adv("scoring", 1, f"lote {num} falhou")
                 continue
-            _apply_batch_result(batch, id_map, result)
-            print(f"   -> lote {num}/{n_batches} concluído")
+            _apply_batch_result(batch, id_map, result, progress)
+            if progress is not None:
+                progress.adv("scoring", 1, f"lote {num}/{n_batches}")
+            else:
+                print(f"   -> lote {num}/{n_batches} concluído")
     else:
-        print(f"   -> scoring paralelo: {workers} workers "
-              f"({len(clients)} chaves, lote i → chave i%{len(clients)})")
+        if progress is None:
+            print(f"   -> scoring paralelo: {workers} workers "
+                  f"({len(clients)} chaves, lote i → chave i%{len(clients)})")
+        else:
+            progress.detail(f"scoring paralelo: {workers} workers")
         lock = threading.Lock()
 
         def run_batch(num_batch: tuple[int, list]):
@@ -421,7 +465,7 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
                 result = _call_with_retry(
                     clients, model, batch, prompt, stats=stats,
                     key_hint=(num - 1) % len(clients),
-                    gates=gates, lock=lock)
+                    gates=gates, lock=lock, progress=progress)
             except Exception as e:
                 return (num, (None, e))
             return (num, (result, None))
@@ -434,27 +478,40 @@ def score(candidates: list, model: str = DEFAULT_MODEL,
         for num in range(1, n_batches + 1):
             result, err = done[num]
             if err is not None:
-                _fail_batch(batches[num - 1], n_batches, num, err)
+                _fail_batch(batches[num - 1], n_batches, num, err, progress)
             else:
-                _apply_batch_result(batches[num - 1], id_map, result)
-            print(f"   -> lote {num}/{n_batches} concluído")
+                _apply_batch_result(batches[num - 1], id_map, result, progress)
+            if progress is not None:
+                progress.adv("scoring", 1, f"lote {num}/{n_batches}")
+            else:
+                print(f"   -> lote {num}/{n_batches} concluído")
     wall = time.time() - t_wall
 
     if cache_dir and fingerprint:
-        save_scores(cache_dir, fingerprint, candidates)
+        save_scores(cache_dir, fingerprint, candidates, progress)
 
     failed = sum(1 for c in candidates if c.failed)
-    print(f"   -> scoring: {len(candidates)-failed} pontuados, {failed} sem nota")
     n_req = stats["requests"]
     avg = stats["total_time"] / n_req if n_req else None
     min_lat = stats.get("min_lat")
     max_lat = stats.get("max_lat")
     speedup = (stats["total_time"] / wall) if wall > 0 else None
-    print(f"   -> [perf] scoring: {n_req} requests em {wall:.1f}s wall "
-          f"(sequencial ~{stats['total_time']:.1f}s, {speedup:.2f}x com "
-          f"{workers} worker(s)), lat req "
-          f"{(min_lat or 0):.1f}/{avg or 0:.1f}/{(max_lat or 0):.1f}s "
-          f"(min/med/max), retries={stats['retries']}, 429s={stats['rate_limited']}")
+    if progress is None:
+        print(f"   -> scoring: {len(candidates)-failed} pontuados, {failed} sem nota")
+        print(f"   -> [perf] scoring: {n_req} requests em {wall:.1f}s wall "
+              f"(sequencial ~{stats['total_time']:.1f}s, {speedup:.2f}x com "
+              f"{workers} worker(s)), lat req "
+              f"{(min_lat or 0):.1f}/{avg or 0:.1f}/{(max_lat or 0):.1f}s "
+              f"(min/med/max), retries={stats['retries']}, 429s={stats['rate_limited']}")
+    else:
+        progress.done("scoring",
+                      f"{len(candidates)-failed} pontuados, {failed} sem nota "
+                      f"({wall:.0f}s, {workers} workers, {stats['retries']} retries, "
+                      f"{stats['rate_limited']}×429)")
+        progress.detail(
+            f"[perf] scoring: {n_req} requests em {wall:.1f}s wall "
+            f"(sequencial ~{stats['total_time']:.1f}s, {speedup:.2f}x, lat "
+            f"{(min_lat or 0):.1f}/{avg or 0:.1f}/{(max_lat or 0):.1f}s)")
     if metrics is not None:
         try:
             metrics.set_nvidia(

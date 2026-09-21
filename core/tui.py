@@ -200,6 +200,12 @@ def summary_lines(cfg: dict, model_name: str = "") -> list[str]:
         rows.append(("Estouro", "*ÁUDIO ESTOURADO* em amarelo"))
     if cfg.get("laughs"):
         rows.append(("Risadas", str(cfg["laughs"])))
+    if cfg.get("verbose"):
+        rows.append(("Saída", "detalhada (--verbose)"))
+    if cfg.get("quiet"):
+        rows.append(("Saída", "mínima (--quiet)"))
+    if cfg.get("log_file"):
+        rows.append(("Log", str(cfg["log_file"])))
     return rows
 
 
@@ -255,36 +261,43 @@ class TUI:
     # -- widgets de campo (ordem da tela) --
     def _fields(self):
         return [
+            ("sec:saida", "VÍDEO E SAÍDA", "header"),
             ("video", "Vídeo", "file"),
             ("out", "Pasta de saída", "text"),
-            ("model", "Modelo de scoring", "model"),
-            ("transcribe_backend", "Backend de transcrição", "backend"),
-            ("whisper_model", "Modelo Whisper (ex: medium, large-v3)", "text"),
             ("top", "Quantidade de clipes", "int"),
+            ("sec:conteudo", "CONTEÚDO", "header"),
+            ("model", "Modelo de scoring", "model"),
+            ("context", "Contexto da live", "text"),
+            ("examples", "Arquivo examples", "text"),
             ("min_score", "Score mínimo (0–10)", "float"),
-            ("pad", "Padding em segundos (0–5)", "float"),
+            ("max_per_10min", "Máximo por 10 min (1–20)", "int"),
             ("min_duration", "Duração mínima do clipe (s)", "float"),
             ("max_duration", "Duração máxima do clipe (s)", "float"),
-            ("max_per_10min", "Máximo por 10 min (1–20)", "int"),
+            ("pad", "Padding em segundos (0–5)", "float"),
+            ("sec:formato", "FORMATO", "header"),
             ("vertical", "Vídeo vertical", "bool"),
             ("title", "Título (hook)", "bool"),
             ("captions", "Legendas", "bool"),
             ("caption_mode", "Modo das legendas", "captionmode"),
+            ("transcribe_backend", "Backend de transcrição", "backend"),
+            ("whisper_model", "Modelo Whisper (ex: medium, large-v3)", "text"),
             ("acoustic_captions", "Legenda *ÁUDIO ESTOURADO*", "bool"),
             ("laughs", "Arquivo de risadas (avançado)", "text"),
             ("audio_features", "Audio features", "bool"),
-            ("use_cache", "Usar cache", "bool"),
-            ("cache_dir", "Diretório do cache", "text"),
-            ("context", "Contexto da live (avançado)", "text"),
-            ("examples", "Arquivo examples (avançado)", "text"),
-            ("force_retranscribe", "Forçar retranscrição", "bool"),
-            ("force_rescore", "Forçar novo scoring", "bool"),
-            ("debug_captions", "Debug de legendas (avançado)", "bool"),
+            ("sec:revisao", "REVISÃO HUMANA", "header"),
             ("review_transcript", "Revisar transcrição (pausa p/ editar)", "bool"),
             ("review_titles", "Revisar títulos (pausa p/ editar)", "bool"),
             ("review_clips", "Revisar clips antes do burn-in", "bool"),
             ("work_dir", "Sessão de revisão (work/..., avançado)", "text"),
             ("custom_words", "Vocabulário customizado (JSON, avançado)", "text"),
+            ("sec:avancado", "AVANÇADO", "header"),
+            ("use_cache", "Usar cache", "bool"),
+            ("cache_dir", "Diretório do cache", "text"),
+            ("force_retranscribe", "Forçar retranscrição", "bool"),
+            ("force_rescore", "Forçar novo scoring", "bool"),
+            ("debug_captions", "Debug de legendas (avançado)", "bool"),
+            ("verbose", "Saída detalhada (chunks, retries, API)", "bool"),
+            ("quiet", "Saída mínima (só avisos e resumo)", "bool"),
             ("process", "[ PROCESSAR ]", "action"),
         ]
 
@@ -334,6 +347,10 @@ class TUI:
             self.cfg["review_clips"] = not self.cfg.get("review_clips", False)
         elif key == "acoustic_captions":
             self.cfg["acoustic_captions"] = not self.cfg.get("acoustic_captions", False)
+        elif key == "verbose":
+            self.cfg["verbose"] = not self.cfg.get("verbose", False)
+        elif key == "quiet":
+            self.cfg["quiet"] = not self.cfg.get("quiet", False)
 
     def _sync_from_widgets(self):
         # Semântica positiva da tela → flags negativas da CLI, sem inversão.
@@ -354,6 +371,11 @@ class TUI:
         for i, (key, label, kind) in enumerate(self._fields()):
             if row >= h - 3:
                 break
+            if kind == "header":
+                if row + 1 < h - 3:
+                    s.addstr(row, 2, f"── {label} ──"[:w - 4], curses.A_BOLD)
+                    row += 1
+                continue
             val = self._get(key)
             if kind == "bool":
                 disp = f"[{'x' if val else ' '}] {label}"
@@ -428,6 +450,14 @@ class TUI:
 
     def form(self):
         fields = self._fields()
+
+        def skip_headers(d):
+            for _ in range(len(fields)):
+                if fields[self.pos][2] != "header":
+                    return
+                self.pos = (self.pos + d) % len(fields)
+
+        skip_headers(1)
         while True:
             self.draw()
             ch = self.stdscr.getch()
@@ -436,9 +466,13 @@ class TUI:
                 return None
             elif ch in (curses.KEY_UP, ord("k")):
                 self.pos = (self.pos - 1) % len(fields)
+                skip_headers(-1)
             elif ch in (curses.KEY_DOWN, ord("j")):
                 self.pos = (self.pos + 1) % len(fields)
+                skip_headers(1)
             elif ch in (curses.KEY_LEFT, curses.KEY_RIGHT, ord(" ")):
+                if kind == "header":
+                    continue
                 if kind == "bool":
                     self._toggle(key)
                 elif key == "model":
@@ -451,6 +485,8 @@ class TUI:
                     d = -1 if ch == curses.KEY_LEFT else 1
                     self.caption_idx = (self.caption_idx + d) % len(CAPTION_MODES)
             elif ch in (10, 13, curses.KEY_ENTER):
+                if kind == "header":
+                    continue
                 if kind == "bool":
                     self._toggle(key)
                 elif key in ("model", "transcribe_backend", "caption_mode"):

@@ -186,7 +186,7 @@ class TestBatchReuse(unittest.TestCase):
             clips = [_clip(tmp, f"c{i}.mp4", f"bytes-{i}".encode()) for i in (1, 2)]
             out = str(Path(tmp) / "o")
 
-            def _boom_title(text, model):
+            def _boom_title(text, model, progress=None):
                 if "olá" in text:
                     raise RuntimeError("LLM falhou")
                 return {"title": "T", "hashtags": "", "score": None, "reason": "x"}

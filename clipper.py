@@ -31,7 +31,7 @@ from core.audio import annotate as annotate_audio
 from core.scoring import score as score_candidates
 from core.selection import select as select_top
 from core.video import cut as cut_clip, sanitize_filename
-from core.metrics import ExecutionMetrics
+from core.metrics import ExecutionMetrics, _short_gpu
 
 # Re-export para compatibilidade: `from clipper import Candidate` continua funcionando
 from core.models import Word, Segment, Candidate  # noqa: F401
@@ -105,6 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["classic", "peak"],
                    help="Seleção: classic (janela+score, padrão calibrado) ou peak "
                         "(experimental: clip construído ao redor do auge)")
+    p.add_argument("--verbose", action="store_true",
+                   help="Mostra detalhes técnicos (chunks, retries, API) durante o run")
+    p.add_argument("--quiet", action="store_true",
+                   help="Só avisos, erros e resumo final")
+    p.add_argument("--log-file", default=None,
+                   help="Arquivo de log detalhado (sempre inclui detalhes, mesmo sem --verbose)")
     return p
 
 
@@ -125,7 +131,7 @@ CONFIG_FIELDS = (
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
     "review_transcript", "review_titles", "review_clips", "work_dir", "custom_words",
-    "align", "selection_mode",
+    "align", "selection_mode", "verbose", "quiet", "log_file",
 )
 
 
@@ -171,6 +177,9 @@ def config_from_args(args) -> dict:
         "custom_words": args.custom_words,
         "align": getattr(args, "align", "off"),
         "selection_mode": getattr(args, "selection_mode", "classic"),
+        "verbose": bool(getattr(args, "verbose", False)),
+        "quiet": bool(getattr(args, "quiet", False)),
+        "log_file": getattr(args, "log_file", None),
     }
 
 
@@ -267,6 +276,12 @@ def cli_command(cfg: dict) -> str:
         parts += ["--align", cfg["align"]]
     if cfg.get("selection_mode", "classic") != "classic":
         parts += ["--selection-mode", cfg["selection_mode"]]
+    if cfg.get("verbose"):
+        parts.append("--verbose")
+    if cfg.get("quiet"):
+        parts.append("--quiet")
+    if cfg.get("log_file"):
+        parts += ["--log-file", cfg["log_file"]]
     return " ".join(shlex.quote(x) for x in parts)
 
 
@@ -438,10 +453,30 @@ def run_pipeline(cfg: dict) -> None:
         "selection_mode": cfg.get("selection_mode", "classic"),
     }
     metrics = ExecutionMetrics(video, run_args).start()
+    from core.progress import Progress, error_box, review_banner
+    bus = Progress(mode="SELEÇÃO DE MELHORES MOMENTOS",
+                   verbose=bool(cfg.get("verbose", False)),
+                   quiet=bool(cfg.get("quiet", False)),
+                   log_file=cfg.get("log_file"))
     stage = "preflight"
     try:
         with metrics.stage("preflight"):
-            preflight(video, out_dir, cfg["top"], transcribe_backend=cfg["transcribe_backend"])
+            preflight(video, out_dir, cfg["top"], transcribe_backend=cfg["transcribe_backend"],
+                      progress=bus)
+        try:
+            from core import intel as _intel_hw
+            _d = _intel_hw.describe(cfg["transcribe_backend"])
+            _v = metrics.video
+            bus.header([
+                f"{_v.get('name') or Path(video).name} · "
+                f"{_v.get('duration_hms') or '?'} · "
+                f"{cfg['top']} clipes → {out_dir}",
+                f"Whisper {_d['transcribe_backend'].upper()} · "
+                f"{_short_gpu(_d.get('gpu_name')) or _d.get('transcribe_reason') or 'CPU'} · "
+                f"{cfg.get('whisper_model')} · {cfg.get('model')}",
+            ])
+        except Exception:
+            pass
 
         cache_dir = Path(cfg["cache_dir"]).expanduser() if cfg["cache_dir"] else None
         fp = fingerprint(video, cfg["whisper_model"]) if cache_dir else None
@@ -453,7 +488,7 @@ def run_pipeline(cfg: dict) -> None:
                 from core import review as _rev
                 approved_path = Path(cfg["work_dir"]) / "transcription" / "transcript.json"
                 segments = _rev.require_approved(approved_path)
-                print(f"[1/5] Transcrição aprovada carregada ({len(segments)} segmentos, sem Whisper)")
+                bus.note(f"Transcrição aprovada carregada ({len(segments)} segmentos, sem Whisper)")
                 try:
                     metrics.set_transcription(
                         model="review", backend_requested=cfg["transcribe_backend"],
@@ -465,9 +500,11 @@ def run_pipeline(cfg: dict) -> None:
             else:
                 segments = transcribe(video, cache_dir=cache_dir, force=cfg["force_retranscribe"],
                                       backend=cfg["transcribe_backend"], metrics=metrics,
-                                      model_size=cfg["whisper_model"])
+                                      model_size=cfg["whisper_model"], progress=bus)
             if cfg.get("review_transcript") and not cfg.get("work_dir"):
-                segments = _pause_for_transcript_review(cfg, video, segments)
+                with bus.pause():
+                    review_banner(sys.stdout, "REVISÃO DA TRANSCRIÇÃO", 1, 1)
+                    segments = _pause_for_transcript_review(cfg, video, segments)
             if cfg.get("align", "off") != "off":
                 # Forced alignment opt-in: só re-mede timestamps (texto intacto),
                 # com fallback controlado ao Whisper. Scoring/seleção/corte
@@ -475,7 +512,7 @@ def run_pipeline(cfg: dict) -> None:
                 from core.alignment import align_segments as _align
                 segments, _astats = _align(
                     segments, audio_path=video, backend=cfg.get("align"),
-                    model_size=cfg["whisper_model"], language=None)
+                    model_size=cfg["whisper_model"], language=None, progress=bus)
                 try:
                     metrics.stages["alignment"] = _astats.time_sec
                 except Exception:
@@ -494,32 +531,33 @@ def run_pipeline(cfg: dict) -> None:
                      "meta": {"segments": len(segments),
                               "words": sum(len(s.words) for s in segments)}})
             except Exception as e:
-                print(f"   ! artefato transcript não persistido ({e})")
+                bus.warn(f"! artefato transcript não persistido ({e})")
         stage = "candidates"
         with metrics.stage("candidates"):
             from core.backends import probe_duration as _probe
             media_end = _probe(video)
             candidates = build_candidates(segments, min_dur=cfg["min_duration"],
                                           max_dur=cfg["max_duration"],
-                                          media_end=media_end)
+                                          media_end=media_end, progress=bus)
             if not candidates:
                 sys.exit("Nenhum candidato encontrado (vídeo sem fala?).")
             candidates = snap_all(candidates, pad=cfg["pad"],
                                   min_dur=cfg["min_duration"],
                                   max_dur=cfg["max_duration"],
-                                  media_end=media_end)
+                                  media_end=media_end, progress=bus)
         metrics.set_counts(candidates=len(candidates))
 
         stage = "audio"
         with metrics.stage("audio"):
-            candidates = annotate_audio(video, candidates, enable=not cfg["no_audio_features"])
+            candidates = annotate_audio(video, candidates, enable=not cfg["no_audio_features"],
+                                        progress=bus)
 
         stage = "scoring"
         with metrics.stage("scoring"):
             candidates = score_candidates(
                 candidates, model=cfg["model"], cache_dir=cache_dir, fingerprint=fp,
                 force=cfg["force_rescore"], context=cfg["context"], examples_path=cfg["examples"],
-                metrics=metrics,
+                metrics=metrics, progress=bus,
             )
 
         stage = "selection"
@@ -539,7 +577,7 @@ def run_pipeline(cfg: dict) -> None:
                 _pstats = _detect_all(
                     [c for c in candidates if not c.failed], model=cfg["model"],
                     context=cfg.get("context"), use_llm=True,
-                    laughs=_laugh_ranges, events=None)
+                    laughs=_laugh_ranges, events=None, progress=bus)
                 _mend = media_end if media_end is not None else _probe2(video)
                 for c in candidates:
                     if not c.failed and c.peak_start is not None:
@@ -549,19 +587,26 @@ def run_pipeline(cfg: dict) -> None:
                     metrics.stages["peaks"] = _pstats.get("time_sec", 0.0)
                 except Exception:
                     pass
+                try:
+                    metrics.stages["peaks"] = _pstats.get("time_sec", 0.0)
+                except Exception:
+                    pass
                 selected = _select_peak(candidates, cfg["top"],
                                         min_score=cfg["min_score"],
-                                        max_per_10min=cfg["max_per_10min"])
-                _tstats = _retitle(selected, cfg["model"])
-                print(f"   -> peak titles: {_tstats.get('retitled', 0)} do auge, "
-                      f"{_tstats.get('kept', 0)} da janela")
+                                        max_per_10min=cfg["max_per_10min"],
+                                        progress=bus)
+                _tstats = _retitle(selected, cfg["model"], progress=bus)
+                bus.note(f"peak titles: {_tstats.get('retitled', 0)} do auge, "
+                         f"{_tstats.get('kept', 0)} da janela")
             else:
                 selected = select_top(candidates, cfg["top"], min_score=cfg["min_score"],
-                                      max_per_10min=cfg["max_per_10min"])
+                                      max_per_10min=cfg["max_per_10min"], progress=bus)
             if not selected:
                 sys.exit("Nenhum clipe passou no corte. Tente --min-score menor.")
             if cfg.get("review_titles"):
-                selected = _pause_for_titles_review(cfg, video, segments, selected)
+                with bus.pause():
+                    review_banner(sys.stdout, "REVISÃO DE TÍTULOS", 1, 1)
+                    selected = _pause_for_titles_review(cfg, video, segments, selected)
         metrics.set_counts(selected=len(selected))
         _review_status = {}
         if cfg.get("review_clips"):
@@ -573,8 +618,10 @@ def run_pipeline(cfg: dict) -> None:
             _previews = _cr.build_previews(
                 video, selected, _session, vertical=not cfg["no_vertical"])
             with metrics.stage("review"):
-                _reviewed, _statuses, _rstats = _cr.run(
-                    selected, video, _session, _previews)
+                with bus.pause():
+                    review_banner(sys.stdout, "REVISÃO DE CLIPS", 1, len(selected))
+                    _reviewed, _statuses, _rstats = _cr.run(
+                        selected, video, _session, _previews)
             _review_status = {}
             _kept = iter(_reviewed)
             for _st in _statuses:
@@ -586,10 +633,10 @@ def run_pipeline(cfg: dict) -> None:
             metrics.set_counts(selected=len(selected))
         warn = _title_warnings(segments, selected)
         for i, w in warn.items():
-            print(f"   ! clipe {i}: title_warnings={w}")
+            bus.warn(f"clipe {i}: title_warnings={w}")
 
         stage = "cutting"
-        print(f"[5/5] Cortando {len(selected)} clipes com ffmpeg...")
+        bus.stage("cutting", "Renderização", total=len(selected), unit="clipes")
         manifest = []
         clips_ok, clips_failed = 0, 0
         t_cut = time.time()
@@ -603,12 +650,12 @@ def run_pipeline(cfg: dict) -> None:
             debug_dir = Path("debug") / Path(video).stem
             debug_dir.mkdir(parents=True, exist_ok=True)
             write_human_transcript(segments, debug_dir / "transcript.txt")
-            print(f"   -> debug de legendas em: {debug_dir.resolve()}")
+            bus.detail(f"debug de legendas em: {debug_dir.resolve()}")
         _laughs = []
         if cfg.get("laughs"):
             from core import acoustic as _ac
             _laughs = _ac.load_laughs(cfg["laughs"])
-            print(f"   -> {len(_laughs)} risada(s) marcada(s) em {cfg['laughs']}")
+            bus.note(f"{len(_laughs)} risada(s) marcada(s) em {cfg['laughs']}")
         for i, c in enumerate(selected, start=1):
             name = sanitize_filename(c.title, f"clipe_{i}")
             out = out_dir / f"{i:02d}_{name}.mp4"
@@ -623,23 +670,24 @@ def run_pipeline(cfg: dict) -> None:
                     from core import acoustic as _ac
                     events, _stats = _ac.detect_clipping(video, c.start, c.duration)
                     if events:
-                        print(f"   -> clipe {i}: {len(events)} trecho(s) estourado(s)")
+                        bus.note(f"clipe {i}: {len(events)} trecho(s) estourado(s)")
                 if _laughs:
                     in_clip = [e for e in _laughs
                                if e.end > c.start and e.start < c.end]
                     if in_clip:
-                        print(f"   -> clipe {i}: {len(in_clip)} risada(s) marcada(s)")
+                        bus.note(f"clipe {i}: {len(in_clip)} risada(s) marcada(s)")
                     events = (events or []) + in_clip
                 cut_clip(video, c, out, vertical=not cfg["no_vertical"], captions=not cfg["no_captions"],
                          debug_dir=debug_dir, acoustic_events=events,
                          caption_mode=cfg.get("caption_mode", "phrases"),
                          title=not cfg.get("no_title", False))
             except Exception as e:
-                print(f"   ! Falha clipe {i}: {e}")
+                bus.warn(f"! Falha clipe {i}: {e}")
                 clips_failed += 1
                 continue
             clips_ok += 1
-            print(f"   -> {out.name}  (nota {c.score:.1f}, {c.duration:.0f}s, energy={c.energy}) — {c.title}")
+            bus.adv("cutting", 1, out.name)
+            bus.note(f"-> {out.name}  (nota {c.score:.1f}, {c.duration:.0f}s, energy={c.energy}) — {c.title}")
             manifest.append({
                 "file": out.name, "start": round(c.start, 1), "end": round(c.end, 1),
                 "original_start": round(c.original_start, 1) if c.snapped else round(c.start, 1),
@@ -672,9 +720,11 @@ def run_pipeline(cfg: dict) -> None:
         )
 
         (out_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        bus.done("cutting", f"{clips_ok} ok, {clips_failed} falhas")
+        bus.close()
         print(f"\nPronto! Clipes e manifest.json salvos em: {out_dir.resolve()}")
         if cache_dir:
-            print(f"Cache em: {cache_dir.resolve()} (fingerprint {fp})")
+            bus.detail(f"Cache em: {cache_dir.resolve()} (fingerprint {fp})")
 
         metrics.finish("success")
         metrics.print_summary()
@@ -688,6 +738,13 @@ def run_pipeline(cfg: dict) -> None:
         else:
             msg = str(e.code)
         try:
+            bus.close()
+        except Exception:
+            pass
+        if msg and not isinstance(e.code, int):
+            error_box(sys.stdout, f"Interrompido em {stage}",
+                      [msg], "nada foi sobrescrito; rode de novo para continuar de onde parou")
+        try:
             metrics.finish("failed", stage_failed=stage,
                            error={"type": "SystemExit", "message": msg[:500]})
         except Exception:
@@ -698,6 +755,14 @@ def run_pipeline(cfg: dict) -> None:
             pass
         raise
     except Exception as e:
+        try:
+            bus.close()
+        except Exception:
+            pass
+        if not cfg.get("quiet", False):
+            error_box(sys.stdout, f"Falha em {stage}",
+                      [f"{type(e).__name__}: {e}"],
+                      "detalhes no relatório metrics/; rode com --verbose para o passo a passo")
         try:
             metrics.finish("failed", stage_failed=stage,
                            error={"type": type(e).__name__, "message": str(e)[:500]})
@@ -713,6 +778,10 @@ def run_pipeline(cfg: dict) -> None:
         # (ex: Ctrl+C) ainda persiste o relatório como "interrupted" antes de
         # propagar. Filhos ffmpeg recebem o mesmo SIGINT do terminal; a thread
         # de métricas é daemon e morre com o processo.
+        try:
+            bus.close()
+        except Exception:
+            pass
         try:
             metrics.finish("interrupted", stage_failed=stage,
                            error={"type": type(e).__name__, "message": str(e)[:500]})

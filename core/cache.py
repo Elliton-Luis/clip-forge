@@ -20,7 +20,28 @@ def fingerprint(video_path: str, model_size: str | None = None) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
-def load_transcript(cache_dir: Path, fp: str):
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
+
+def load_transcript(cache_dir: Path, fp: str, progress=None):
     p = cache_dir / f"{fp}.transcript.json"
     if not p.exists():
         return None
@@ -36,14 +57,14 @@ def load_transcript(cache_dir: Path, fp: str):
                 words.append(ww)
             segs.append(Segment(text=s["text"], start=s["start"], end=s["end"], words=words,
                                 timestamp_source=s.get("timestamp_source", "whisper") or "whisper"))
-        print(f"   -> cache hit: transcrição {p} ({len(segs)} segmentos)")
+        _detail(progress, f"cache hit: transcrição {p} ({len(segs)} segmentos)")
         return segs
     except Exception as e:
-        print(f"   ! cache corrompido ({p}): {e} — retranscrevendo")
+        _warn(progress, f"   ! cache corrompido ({p}): {e} — retranscrevendo")
         return None
 
 
-def save_transcript(cache_dir: Path, fp: str, segments: list) -> None:
+def save_transcript(cache_dir: Path, fp: str, segments: list, progress=None) -> None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         p = cache_dir / f"{fp}.transcript.json"
@@ -60,24 +81,24 @@ def save_transcript(cache_dir: Path, fp: str, segments: list) -> None:
             ],
         }
         p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-        print(f"   -> transcrição em cache: {p}")
+        _detail(progress, f"transcrição em cache: {p}")
     except Exception as e:
-        print(f"   ! falha ao salvar cache transcrição: {e}")
+        _warn(progress, f"   ! falha ao salvar cache transcrição: {e}")
 
 
-def load_scores(cache_dir: Path, fp: str, candidates: list) -> bool:
+def load_scores(cache_dir: Path, fp: str, candidates: list, progress=None) -> bool:
     p = cache_dir / f"{fp}.scores.json"
     if not p.exists():
         return False
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
         if data.get("energy_version", 0) != AUDIO_ENERGY_VERSION:
-            print(f"   ! cache scores com medição de energia antiga "
+            _warn(progress, f"   ! cache scores com medição de energia antiga "
                   f"(v{data.get('energy_version', 0)} vs v{AUDIO_ENERGY_VERSION}) — re-pontuando")
             return False
         scores = data.get("scores", [])
         if len(scores) != len(candidates):
-            print(f"   ! cache scores tamanho divergente ({len(scores)} vs {len(candidates)}) — re-pontuando")
+            _warn(progress, f"   ! cache scores tamanho divergente ({len(scores)} vs {len(candidates)}) — re-pontuando")
             return False
         for c, s in zip(candidates, scores):
             c.score = float(s.get("score", 0))
@@ -96,14 +117,14 @@ def load_scores(cache_dir: Path, fp: str, candidates: list) -> bool:
             c.peak_source = s.get("peak_source", "none") or "none"
             c.peak_reason = s.get("peak_reason", "")
             c.title_source = s.get("title_source", "window") or "window"
-        print(f"   -> cache hit: scores {p}")
+        _detail(progress, f"cache hit: scores {p}")
         return True
     except Exception as e:
-        print(f"   ! cache scores corrompido ({p}): {e} — re-pontuando")
+        _warn(progress, f"   ! cache scores corrompido ({p}): {e} — re-pontuando")
         return False
 
 
-def save_scores(cache_dir: Path, fp: str, candidates: list) -> None:
+def save_scores(cache_dir: Path, fp: str, candidates: list, progress=None) -> None:
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         p = cache_dir / f"{fp}.scores.json"
@@ -126,6 +147,6 @@ def save_scores(cache_dir: Path, fp: str, candidates: list) -> None:
             ],
         }
         p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"   -> scores em cache: {p}")
+        _detail(progress, f"scores em cache: {p}")
     except Exception as e:
-        print(f"   ! falha ao salvar cache scores: {e}")
+        _warn(progress, f"   ! falha ao salvar cache scores: {e}")

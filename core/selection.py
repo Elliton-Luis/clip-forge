@@ -5,12 +5,28 @@ SRP: só seleção. Sem I/O.
 from .config import DEFAULT_MIN_SCORE, DEFAULT_MAX_PER_10MIN, NMS_DECAY_STRENGTH
 
 
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _note(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
 def select(candidates: list, top_n: int,
            min_score: float = DEFAULT_MIN_SCORE,
-           max_per_10min: int = DEFAULT_MAX_PER_10MIN) -> list:
+           max_per_10min: int = DEFAULT_MAX_PER_10MIN,
+           progress=None) -> list:
     pool = [c for c in candidates if not c.failed and c.score >= min_score]
     if not pool:
-        print(f"   ! nenhum candidato >= {min_score} (de {len(candidates)}). Tente --min-score menor.")
+        _warn(progress,
+              f"   ! nenhum candidato >= {min_score} (de {len(candidates)}). Tente --min-score menor.")
         return []
 
     pool.sort(key=lambda c: c.score, reverse=True)
@@ -49,8 +65,10 @@ def select(candidates: list, top_n: int,
                 break
 
     selected.sort(key=lambda c: c.start)
-    print(f"[4/5] {len(selected)} clipes selecionados (de {len(pool)} elegíveis, min_score={min_score}, max_per_10min={max_per_10min})")
+    _note(progress,
+          f"[4/5] {len(selected)} clipes selecionados (de {len(pool)} elegíveis, min_score={min_score}, max_per_10min={max_per_10min})")
     if selected:
-        print("      scores (orig→penalizado): " +
+        _note(progress,
+              "      scores (orig→penalizado): " +
               ", ".join(f"{c.score:.1f}→{getattr(c,'_penalized_score',c.score):.1f}" for c in selected))
     return selected

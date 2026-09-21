@@ -9,9 +9,16 @@ from .config import (
 )
 
 
+def _note(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
 def build(segments: list, min_dur: float = MIN_CLIP_SECONDS,
           max_dur: float = MAX_CLIP_SECONDS,
-          media_end: float | None = None) -> list[Candidate]:
+          media_end: float | None = None, progress=None) -> list[Candidate]:
     """Janelas deslizantes de [min_dur, max_dur]. MAX é teto real: nenhuma
     janela nasce maior que max_dur (o --pad também nunca estoura, ver _snap_one).
     media_end (duração real da mídia, quando conhecida): janelas nunca passam
@@ -54,7 +61,7 @@ def build(segments: list, min_dur: float = MIN_CLIP_SECONDS,
         while i < n and segments[i].start < cursor:
             i += 1
 
-    print(f"[2/5] {len(cands)} janelas candidatas geradas.")
+    _note(progress, f"[2/5] {len(cands)} janelas candidatas geradas.")
     return cands
 
 
@@ -115,9 +122,10 @@ def _snap_one(c: Candidate, pad: float = DEFAULT_PAD_SECONDS,
 def snap_all(candidates: list[Candidate], pad: float,
              min_dur: float = MIN_CLIP_SECONDS,
              max_dur: float = MAX_CLIP_SECONDS,
-             media_end: float | None = None) -> list[Candidate]:
+             media_end: float | None = None, progress=None) -> list[Candidate]:
     for c in candidates:
         _snap_one(c, pad, min_dur, max_dur, media_end)
     n = sum(1 for c in candidates if c.snapped)
-    print(f"   -> {n}/{len(candidates)} candidatos com snap (pad={pad}s, tol=±{SNAP_TOLERANCE_SECONDS}s, range=[{min_dur},{max_dur}]s)")
+    _note(progress,
+          f"   -> {n}/{len(candidates)} candidatos com snap (pad={pad}s, tol=±{SNAP_TOLERANCE_SECONDS}s, range=[{min_dur},{max_dur}]s)")
     return candidates

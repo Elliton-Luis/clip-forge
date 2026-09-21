@@ -108,9 +108,22 @@ números (validados: `--top` > 0, `--pad` 0–5 etc.), modo das legendas
 (`phrases`/`words`/`intervals` com ←→), `[x] Legenda *ÁUDIO ESTOURADO*`, arquivo de
 risadas, checkboxes
 (`[x] Vídeo vertical` = sem `--no-vertical`), contexto/examples e cache.
+O formulário é agrupado em seções (VÍDEO E SAÍDA · CONTEÚDO · FORMATO ·
+REVISÃO HUMANA · AVANÇADO); saída detalhada/mínima têm checkboxes próprios.
 Antes de executar há uma tela de confirmação com o resumo **e o comando CLI
 equivalente** (ex.: `python clipper.py video.mp4 --top 5 --model ...`),
 para aprender a CLI junto. `Ctrl+C` e falhas geram relatório normalmente.
+
+## Acompanhamento no terminal
+
+Durante o processamento a tela mostra estado, não log: arquivo, etapa atual
+(`ETAPA` implícita pela lista — Transcrição → Candidatos → Scoring → Seleção →
+Renderização), progresso real (`183/240 chunks`, `5/12 lotes`, ETA só quando
+confiável) e avisos fixos (`! lote 3: 503`). Detalhes por chunk/tentativa vão
+para `--verbose` ou `--log-file`; `--quiet` deixa só avisos, erros e o resumo.
+Em pipe/script o formato é o mesmo, em linhas (sem ANSI). Revisões
+(transcrição/títulos/clips) continuam telas de decisão A/E/S/Q, agora com
+cabeçalho uniforme (`REVISÃO DE CLIPS · 3/10`).
 
 Opções avançadas (contexto, examples, forçar reprocessamento, debug de
 legendas) ficam no final do formulário, sem esconder nada.
@@ -529,6 +542,9 @@ toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
 | `--review-clips` | Revisa selecionados antes do burn-in (preview limpo, A/E/S/Q) | off |
 | `--work-dir DIR` | Usa transcrição APROVADA, pula o Whisper | — |
 | `--custom-words JSON` | Vocabulário (`{"words": [...]}`), correção exata | — |
+| `--verbose` | Detalhes técnicos durante o run (chunks, retries, API) | off |
+| `--quiet` | Só avisos, erros e resumo final | off |
+| `--log-file PATH` | Log detalhado em arquivo (sempre completo) | — |
 
 ```bash
 # calibrado pro seu conteúdo

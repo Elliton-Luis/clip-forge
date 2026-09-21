@@ -12,23 +12,30 @@ from .system import format_report
 
 
 def check(video_path: str, out_dir: Path, top_n: int,
-          transcribe_backend: str | None = None) -> None:
+          transcribe_backend: str | None = None, progress=None) -> None:
     # Loga specs + limites auto-detectados (sem alterar nada no sistema)
     try:
-        print(format_report(_AUTO_LIMITS))
+        report = format_report(_AUTO_LIMITS)
+        if progress is not None:
+            progress.detail(report)
+        else:
+            print(report)
     except Exception:
         pass
     # Relatório GPU/backend (§8) — sempre visível, nunca silencioso
     try:
         from . import intel as intel_hw
         d = intel_hw.describe(transcribe_backend or CLIPPER_TRANSCRIBE_BACKEND)
-        if d["gpu_present"]:
-            print(f"GPU detected: {d['gpu_name']}")
+        gpu_line = f"GPU detected: {d['gpu_name']}" if d["gpu_present"] else "GPU detected: none"
+        backend_line = (f"Transcription backend: {d['transcribe_backend'].upper()}"
+                        + (f" ({d['transcribe_reason']})" if d["transcribe_backend"] in ("cpu", "unavailable") else ""))
+        accel_line = f"Video acceleration: {d['video_encoder']}"
+        if progress is not None:
+            progress.detail("\n".join([gpu_line, backend_line, accel_line]))
         else:
-            print("GPU detected: none")
-        print(f"Transcription backend: {d['transcribe_backend'].upper()}"
-              + (f" ({d['transcribe_reason']})" if d["transcribe_backend"] in ("cpu", "unavailable") else ""))
-        print(f"Video acceleration: {d['video_encoder']}")
+            print(gpu_line)
+            print(backend_line)
+            print(accel_line)
     except Exception:
         pass
     errors: list[str] = []
@@ -43,7 +50,10 @@ def check(video_path: str, out_dir: Path, top_n: int,
                 capture_output=True, text=True, timeout=10,
             )
             if not probe.stdout.strip():
-                print(f"   ! Aviso: nenhuma trilha de áudio em {video_path} — transcrição pode falhar.")
+                if progress is not None:
+                    progress.warn(f"nenhuma trilha de áudio em {video_path} — transcrição pode falhar.")
+                else:
+                    print(f"   ! Aviso: nenhuma trilha de áudio em {video_path} — transcrição pode falhar.")
         except Exception:
             pass
 
@@ -66,7 +76,10 @@ def check(video_path: str, out_dir: Path, top_n: int,
         if free_gb < 1:
             errors.append(f"Espaço insuficiente em {out_dir} ({free_gb:.1f} GB livres, mínimo 1 GB)")
         elif free_gb < 5:
-            print(f"   ! Aviso: pouco espaço livre ({free_gb:.1f} GB em {out_dir})")
+            if progress is not None:
+                progress.warn(f"pouco espaço livre ({free_gb:.1f} GB em {out_dir})")
+            else:
+                print(f"   ! Aviso: pouco espaço livre ({free_gb:.1f} GB em {out_dir})")
     except Exception:
         pass
 
@@ -82,4 +95,7 @@ def check(video_path: str, out_dir: Path, top_n: int,
         sys.exit(1)
 
     if not shutil.which("ffprobe"):
-        print("   ! Aviso: ffprobe não encontrado — crop/pad e checagem de áudio limitados.")
+        if progress is not None:
+            progress.detail("ffprobe não encontrado — crop/pad e checagem de áudio limitados.")
+        else:
+            print("   ! Aviso: ffprobe não encontrado — crop/pad e checagem de áudio limitados.")

@@ -429,10 +429,24 @@ def _chars_to_words(seg: Segment, char_spans, bounds, lo: float, hi: float):
     return words, aligned, fallback
 
 
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
 def align_segments(segments: list[Segment], audio_path: str | None = None,
                    backend: str | None = None, model_size: str = "medium",
                    language: str | None = None,
-                   redecode_fn=None) -> tuple[list[Segment], AlignmentStats]:
+                   redecode_fn=None, progress=None) -> tuple[list[Segment], AlignmentStats]:
     """Ponto de entrada. Nunca altera texto; fallback preserva timestamps Whisper."""
     be = resolve_backend(backend)
     stats = AlignmentStats(backend=be, n_words=sum(len(s.words) for s in segments))
@@ -449,12 +463,12 @@ def align_segments(segments: list[Segment], audio_path: str | None = None,
         return out, stats
     if audio_path is None:
         stats.error = "align sem audio_path: fallback para timestamps Whisper"
-        print(f"   ! alignment ({be}): sem áudio — mantém Whisper")
+        _warn(progress, f"   ! alignment ({be}): sem áudio — mantém Whisper")
         stats.n_fallback = stats.n_words
         stats.time_sec = round(time.time() - t0, 3)
         out, _ = align_segments(segments, backend="off")
         return out, stats
-    print(f"[align] Forced alignment ({be}, v{ALIGN_VERSION}) sobre {len(segments)} segmentos...")
+    _say(progress, f"[align] Forced alignment ({be}, v{ALIGN_VERSION}) sobre {len(segments)} segmentos...")
     try:
         if be == "whisper-refine":
             out = [_refine_segment(s, audio_path, model_size, language, stats,
@@ -465,7 +479,7 @@ def align_segments(segments: list[Segment], audio_path: str | None = None,
             raise ValueError(be)
     except Exception as e:  # falha global: nunca corromper o transcript
         stats.error = f"{type(e).__name__}: {e}"
-        print(f"   ! alignment ({be}) falhou: {e} — mantém Whisper")
+        _warn(progress, f"   ! alignment ({be}) falhou: {e} — mantém Whisper")
         out, _ = align_segments(segments, backend="off")
         out_stats = AlignmentStats(backend=be, n_words=stats.n_words,
                                    n_aligned=0, n_fallback=stats.n_words,
@@ -473,8 +487,8 @@ def align_segments(segments: list[Segment], audio_path: str | None = None,
                                    error=stats.error)
         return out, out_stats
     stats.time_sec = round(time.time() - t0, 3)
-    print(f"   -> align: {stats.n_aligned} words re-medidas, "
-          f"{stats.n_fallback} fallback Whisper ({stats.time_sec}s)")
+    _say(progress, f"   -> align: {stats.n_aligned} words re-medidas, "
+              f"{stats.n_fallback} fallback Whisper ({stats.time_sec}s)")
     if stats.error:
-        print(f"   ! align: {stats.error}")
+        _warn(progress, f"   ! align: {stats.error}")
     return out, stats

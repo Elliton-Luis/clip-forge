@@ -40,6 +40,27 @@ PEAK_STEP_SEC = 6.0
 PEAK_SAME_MOMENT = 0.5  # overlap de peaks >= 50% = mesmo momento
 PEAK_VERSION = 1
 
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _note(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
 PEAK_JUDGE_PROMPT = """Você é um editor de cortes virais. Você recebe SUBJANELAS de ~12 segundos de UM candidato a clip (transcrição + tempos + energia da janela toda + speech_rate local).
 
 Para CADA subjanela, dê "intensity" 0-10: quanto vale a pena MOSTRAR exatamente este trecho (punchline, reação, reviravolta, frase de efeito, interação engraçada — não exposição genérica).
@@ -147,7 +168,7 @@ def _set_peak(c: Candidate, start: float, end: float, score: float,
 
 
 def judge_peaks_llm(candidates: list, model: str,
-                    context: str | None = None) -> dict:
+                    context: str | None = None, progress=None) -> dict:
     """1 chamada LLM por candidato com suas subjanelas. Retorna stats.
     Falha por candidato → fallback heurístico (peak_source registra)."""
     from .scoring import _load_api_keys, _KeyGate, _build_prompt
@@ -162,25 +183,28 @@ def judge_peaks_llm(candidates: list, model: str,
     for c in candidates:
         subs = split_subwindows(c)
         c._subs = subs  # type: ignore
+        if progress is not None:
+            progress.adv("peaks", 1, f"janela {c.start:.0f}–{c.end:.0f}s")
         if len(subs) == 1:
             _set_peak(c, subs[0].start, subs[0].end, 5.0, "heuristic", "janela única")
             stats["heuristic"] += 1
             continue
         id_map = {s.idx: s for s in subs}
         try:
-            result = _call_peak(clients, model, c, subs, prompt, gates)
+            result = _call_peak(clients, model, c, subs, prompt, gates, progress)
             stats["requests"] += 1
-            _apply_peak_result(c, subs, id_map, result)
+            _apply_peak_result(c, subs, id_map, result, progress)
             stats["llm" if c.peak_source == "llm" else "heuristic"] += 1
         except Exception as e:
-            print(f"      ! peak LLM falhou ({c.start:.0f}-{c.end:.0f}s: {e}) — heurística")
+            _warn(progress,
+                  f"      ! peak LLM falhou ({c.start:.0f}-{c.end:.0f}s: {e}) — heurística")
             detect_peak_heuristic(c)
             stats["heuristic"] += 1
     return stats
 
 
 def _call_peak(clients, model: str, c: Candidate, subs: list,
-               prompt: str, gates) -> dict:
+               prompt: str, gates, progress=None) -> dict:
     import json as _json
     import time as _t
 
@@ -214,13 +238,14 @@ def _call_peak(clients, model: str, c: Candidate, subs: list,
             return _json.loads(m.group(0) if m else content)
         except Exception as e:
             last = e
-            print(f"      ! peak judge tentativa {attempt+1}/3: {e}")
+            _detail(progress, f"      ! peak judge tentativa {attempt+1}/3: {e}")
             if attempt < 2:
                 _t.sleep([10, 30][attempt])
     raise last  # type: ignore
 
 
-def _apply_peak_result(c: Candidate, subs: list, id_map: dict, result: dict) -> None:
+def _apply_peak_result(c: Candidate, subs: list, id_map: dict, result: dict,
+                       progress=None) -> None:
     """Aplica o julgamento; ids inválidos ou peak fora → heurística (nunca chuta)."""
     inten = {}
     for item in result.get("windows", []):
@@ -238,7 +263,7 @@ def _apply_peak_result(c: Candidate, subs: list, id_map: dict, result: dict) -> 
     except (TypeError, ValueError):
         peak_id = -1
     if peak_id not in id_map or peak_id not in inten:
-        print(f"      ! peak LLM inválido ({c.start:.0f}s) — heurística")
+        _warn(progress, f"      ! peak LLM inválido ({c.start:.0f}s) — heurística")
         detect_peak_heuristic(c)
         return
     c._sub_scores = inten  # type: ignore
@@ -348,13 +373,15 @@ def peak_overlap_ratio(a: Candidate, b: Candidate) -> float:
 
 def select_peak(candidates: list, top_n: int,
                 min_score: float = DEFAULT_MIN_SCORE,
-                max_per_10min: int = DEFAULT_MAX_PER_10MIN) -> list:
+                max_per_10min: int = DEFAULT_MAX_PER_10MIN,
+                progress=None) -> list:
     """Ranqueia por peak_score (intensidade do auge), filtra pelo score da
     janela (porta de qualidade já calibrada) e suprime mesmo-momento por
     overlap de PEAK — clips 10-70/20-80/30-90 do mesmo auge não coexistem."""
     pool = [c for c in candidates if not c.failed and c.score >= min_score]
     if not pool:
-        print(f"   ! nenhum candidato >= {min_score} (de {len(candidates)}). Tente --min-score menor.")
+        _warn(progress,
+              f"   ! nenhum candidato >= {min_score} (de {len(candidates)}). Tente --min-score menor.")
         return []
     for c in pool:
         if c.peak_start is None:
@@ -378,10 +405,12 @@ def select_peak(candidates: list, top_n: int,
         if len(selected) >= top_n:
             break
     selected.sort(key=lambda c: c.start)
-    print(f"[4/5-peak] {len(selected)} clipes pelo auge "
+    _note(progress,
+          f"[4/5-peak] {len(selected)} clipes pelo auge "
           f"(de {len(pool)} elegíveis, min_score={min_score}, max_per_10min={max_per_10min})")
     if selected:
-        print("      peaks: " + ", ".join(
+        _note(progress,
+              "      peaks: " + ", ".join(
             f"{c.peak_score:.1f}[{c.peak_start:.0f}-{c.peak_end:.0f}]/{c.peak_source}" for c in selected))
     return selected
 
@@ -410,7 +439,7 @@ def _parse_peak_titles(content: str):
     return items
 
 
-def retitle_peak(selected: list, model: str) -> dict:
+def retitle_peak(selected: list, model: str, progress=None) -> dict:
     """Títulos do auge só p/ selecionados (1 chamada batelada). Falha → mantém
     o título da janela (title_source fica "window")."""
     import json as _json
@@ -425,7 +454,7 @@ def retitle_peak(selected: list, model: str) -> dict:
     try:
         keys = _load_api_keys()
     except SystemExit:
-        print("   ! peak titles: sem chave API — mantém títulos da janela")
+        _warn(progress, "   ! peak titles: sem chave API — mantém títulos da janela")
         stats["kept"] = len(selected)
         return stats
     approved = " ".join(c.text for c in selected)
@@ -457,30 +486,42 @@ def retitle_peak(selected: list, model: str) -> dict:
                 continue
             bad = validate_grounding(t, approved + " " + c.text)
             if bad:
-                print(f"   ! peak title clipe {i+1} fora do transcript {bad} — mantém janela")
+                _warn(progress,
+                      f"   ! peak title clipe {i+1} fora do transcript {bad} — mantém janela")
                 stats["kept"] += 1
                 continue
             c.title = t
             c.title_source = "peak"
             stats["retitled"] += 1
     except Exception as e:
-        print(f"   ! peak titles falhou ({e}) — mantém títulos da janela")
+        _warn(progress, f"   ! peak titles falhou ({e}) — mantém títulos da janela")
         stats["kept"] += len(selected) - stats["retitled"]
     return stats
 
 
 def detect_all(candidates: list, model: str | None,
                context: str | None = None, use_llm: bool = True,
-               laughs: list | None = None, events: list | None = None) -> dict:
+               laughs: list | None = None, events: list | None = None,
+               progress=None) -> dict:
     """Pipeline da etapa peak p/ todos os candidatos: julga (LLM ou heurística)
     e constrói o clip ao redor do auge. Retorna stats."""
     t0 = time.time()
+    if progress is not None:
+        progress.stage("peaks", "Auge",
+                       total=sum(1 for c in candidates if not c.failed),
+                       unit="candidatos")
     if use_llm and model:
-        stats = judge_peaks_llm([c for c in candidates if not c.failed], model, context)
+        stats = judge_peaks_llm([c for c in candidates if not c.failed], model,
+                                context, progress)
     else:
         stats = {"requests": 0, "llm": 0, "heuristic": 0}
         for c in candidates:
             if not c.failed and c.peak_start is None:
                 detect_peak_heuristic(c, laughs, events)
                 stats["heuristic"] += 1
+                if progress is not None:
+                    progress.adv("peaks", 1)
+    if progress is not None:
+        progress.done("peaks", f"{stats.get('llm', 0)} por LLM + "
+                               f"{stats.get('heuristic', 0)} heurísticos")
     return {**stats, "time_sec": round(time.time() - t0, 3)}

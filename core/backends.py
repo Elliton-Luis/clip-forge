@@ -90,8 +90,30 @@ def _even_words(text: str, start: float, end: float) -> list[Word]:
     return [Word(t, start + i * dur, start + (i + 1) * dur) for i, t in enumerate(tokens)]
 
 
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
+
 def transcribe_openvino(video_path: str, model_size: str = "medium",
-                        language: str | None = None) -> list[Segment]:
+                        language: str | None = None,
+                        progress=None) -> list[Segment]:
     """Whisper via optimum-intel no device GPU (B580). Levanta RuntimeError se falhar."""
     try:
         import openvino as ov
@@ -121,6 +143,8 @@ def transcribe_openvino(video_path: str, model_size: str = "medium",
     try:
         import soundfile as sf
         for wav, offset in audio_chunks(video_path):
+            if progress is not None:
+                progress.adv("transcribe", 1, f"chunk {offset:.0f}s")
             audio, sr = sf.read(str(wav))
             inputs = processor(audio, sampling_rate=SAMPLE_RATE, return_tensors="pt")
             out = model.generate(**inputs, return_timestamps=True)
@@ -219,7 +243,8 @@ def _decode_chunk(binary: str, model: Path, wav: Path, language: str | None,
 
 
 def transcribe_vulkan(video_path: str, model_size: str = "medium",
-                      language: str | None = None) -> list[Segment]:
+                      language: str | None = None,
+                      progress=None) -> list[Segment]:
     """Whisper via binário whisper.cpp (build Vulkan usa a B580). Levanta RuntimeError se falhar."""
     binary = _whisper_cpp_bin()
     if not binary:
@@ -234,20 +259,22 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
         else:
             raise RuntimeError(f"modelo {model} não encontrado — baixe de HuggingFace (ex: ggerganov/whisper.cpp)")
     segments: list[Segment] = []
-    print("   -> sem VAD (evidência: docs/20260919_0813_vad-experiment.md)")
+    _detail(progress, "sem VAD (evidência: docs/20260919_0813_vad-experiment.md)")
     retry_model = None
     if WHISPER_RETRY_MODEL and WHISPER_RETRY_MODEL.lower() not in ("off", "none"):
         retry_model = _resolve_model_file(WHISPER_RETRY_MODEL)
         if retry_model is not None and retry_model == model:
             retry_model = None  # retry igual ao principal não adianta
         if retry_model is not None:
-            print(f"   -> retry anti-alucinação: {retry_model.name} em chunks sinalizados")
+            _detail(progress, f"retry anti-alucinação: {retry_model.name} em chunks sinalizados")
     n_flagged = n_recovered = 0
     try:
         audio_filter = CLIPPER_TRANSCRIBE_AUDIO_FILTER or None
         if audio_filter:
-            print(f"   -> filtro de áudio p/ transcrição: {audio_filter}")
+            _detail(progress, f"filtro de áudio p/ transcrição: {audio_filter}")
         for wav, offset in audio_chunks(video_path, audio_filter=audio_filter):
+            if progress is not None:
+                progress.adv("transcribe", 1, f"chunk {offset:.0f}s")
             chunk_segs = _decode_chunk(binary, model, wav, language, offset)
             if retry_model is not None:
                 from . import quality as _q
@@ -260,20 +287,24 @@ def transcribe_vulkan(video_path: str, model_size: str = "medium",
                         if _q.choose_retry(True, _q.check(alt_text)["flagged"]) == "retry":
                             chunk_segs = alt
                             n_recovered += 1
-                            print(f"   -> chunk {offset:.0f}s: alucinação limpa pelo retry "
-                                  f"({retry_model.name})")
+                            _detail(progress,
+                                    f"chunk {offset:.0f}s: alucinação limpa pelo retry "
+                                    f"({retry_model.name})")
                         else:
-                            print(f"   -> chunk {offset:.0f}s: retry manteve original "
-                                  f"(ambos sinalizados)")
+                            _detail(progress,
+                                    f"chunk {offset:.0f}s: retry manteve original "
+                                    f"(ambos sinalizados)")
                     except RuntimeError as e:
-                        print(f"   ! chunk {offset:.0f}s: retry falhou ({e}) — mantém original")
+                        _warn(progress,
+                              f"chunk {offset:.0f}s: retry falhou ({e}) — mantém original")
             segments.extend(chunk_segs)
     except RuntimeError:
         raise
     except Exception as e:
         raise RuntimeError(f"erro whisper.cpp Vulkan ({e})")
     if n_flagged:
-        print(f"   -> anti-alucinação: {n_flagged} chunk(s) sinalizado(s), "
+        _warn(progress,
+              f"anti-alucinação: {n_flagged} chunk(s) sinalizado(s), "
               f"{n_recovered} recuperado(s)")
     if not segments:
         raise RuntimeError("whisper.cpp não gerou segmentos (áudio vazio?)")

@@ -31,15 +31,37 @@ def _apply_process_limits() -> None:
     os.environ.setdefault("OPENBLAS_NUM_THREADS", str(CLIPPER_CPU_THREADS))
 
 
-def _transcribe_cpu(video_path: str, model_size: str) -> list[Segment]:
+def _say(progress, text: str) -> None:
+    if progress is not None:
+        progress.note(text)
+    else:
+        print(text)
+
+
+def _warn(progress, text: str) -> None:
+    if progress is not None:
+        progress.warn(text)
+    else:
+        print(text)
+
+
+def _detail(progress, text: str) -> None:
+    if progress is not None:
+        progress.detail(text)
+    else:
+        print(text)
+
+
+def _transcribe_cpu(video_path: str, model_size: str, progress=None) -> list[Segment]:
     from faster_whisper import WhisperModel  # import tardio (pesado)
 
-    print(f"[1/5] Transcrevendo com faster-whisper ({model_size}, "
-          f"device={CLIPPER_DEVICE}, compute={CLIPPER_COMPUTE_TYPE}, "
-          f"threads={CLIPPER_CPU_THREADS}, ram_limit={CLIPPER_RAM_LIMIT_GB}GB) — CPU fallback")
+    _detail(progress,
+            f"Transcrevendo com faster-whisper ({model_size}, "
+            f"device={CLIPPER_DEVICE}, compute={CLIPPER_COMPUTE_TYPE}, "
+            f"threads={CLIPPER_CPU_THREADS}, ram_limit={CLIPPER_RAM_LIMIT_GB}GB) — CPU fallback")
     ctype = CLIPPER_COMPUTE_TYPE
     if CLIPPER_DEVICE == "cpu" and ctype not in ("int8", "int8_float16", "float32", "int8_float32"):
-        print("   ! compute_type inválido p/ CPU, forçando int8")
+        _warn(progress, "compute_type inválido p/ CPU, forçando int8")
         ctype = "int8"
     model = WhisperModel(model_size, device=CLIPPER_DEVICE, compute_type=ctype,
                          cpu_threads=CLIPPER_CPU_THREADS, num_workers=1)
@@ -53,19 +75,32 @@ def _transcribe_cpu(video_path: str, model_size: str) -> list[Segment]:
         words = [Word(w.word.strip(), w.start, w.end) for w in (seg.words or [])]
         segments.append(Segment(text=seg.text.strip(), start=seg.start, end=seg.end, words=words))
     total = segments[-1].end if segments else 0
-    print(f"   -> {len(segments)} segmentos, ~{total/60:.1f}min "
-          f"(idioma: {info.language}, conf: {info.language_probability:.2f})")
+    _say(progress,
+         f"{len(segments)} segmentos, ~{total/60:.1f}min "
+         f"(idioma: {info.language}, conf: {info.language_probability:.2f})")
     return segments
 
 
 def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = False,
                backend: str | None = None, metrics=None,
-               model_size: str | None = None) -> list[Segment]:
+               model_size: str | None = None, progress=None) -> list[Segment]:
     ms = model_size or WHISPER_MODEL_SIZE
     fp = fingerprint(video_path, ms) if cache_dir else None
+    stage = None
+    if progress is not None:
+        # Total conhecido antes de começar: chunks de 30 s sobre a duração.
+        try:
+            dur = gpu_backends.probe_duration(video_path) or 0.0
+            total_chunks = max(1, int(-(-dur // 30))) if dur > 0 else None
+        except Exception:
+            total_chunks = None
+        stage = progress.stage("transcribe", "Transcrição",
+                               total=total_chunks, unit="chunks")
     if cache_dir and not force and fp:
-        cached = load_transcript(cache_dir, fp)
+        cached = load_transcript(cache_dir, fp, progress)
         if cached is not None:
+            if stage is not None:
+                progress.skip("transcribe", f"cache ({len(cached)} segmentos)")
             if metrics is not None:
                 try:
                     from . import intel as _intel
@@ -87,8 +122,10 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
     # preflight já imprimiu o relatório GPU completo; aqui só o backend
     # efetivo (visível também em uso standalone do módulo)
     info = intel_hw.describe(requested)
-    print(f"Transcription backend: {info['transcribe_backend'].upper()}"
-          + (f" ({info['transcribe_reason']})" if info["transcribe_backend"] == "cpu" else ""))
+    if progress is None:
+        # Sem bus: mantém a linha legada (cabeçalho do dashboard cobre no modo bus).
+        print(f"Transcription backend: {info['transcribe_backend'].upper()}"
+              + (f" ({info['transcribe_reason']})" if info["transcribe_backend"] == "cpu" else ""))
 
     order = [info["transcribe_backend"]] if info["transcribe_backend"] not in ("cpu", "unavailable") else []
     require_gpu = requested == "gpu"
@@ -126,22 +163,31 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
         tried.append(b)
         try:
             if b == "vulkan":
-                print("[1/5] Transcrevendo com whisper.cpp (Vulkan, B580)...")
+                _detail(progress, "Transcrevendo com whisper.cpp (Vulkan, B580)...")
                 segments = gpu_backends.transcribe_vulkan(
-                    video_path, model_size=ms, language=WHISPER_LANGUAGE)
+                    video_path, model_size=ms, language=WHISPER_LANGUAGE,
+                    progress=progress)
             elif b == "openvino":
-                print("[1/5] Transcrevendo com OpenVINO (device GPU, B580)...")
+                _detail(progress, "Transcrevendo com OpenVINO (device GPU, B580)...")
                 segments = gpu_backends.transcribe_openvino(
-                    video_path, model_size=ms, language=WHISPER_LANGUAGE)
+                    video_path, model_size=ms, language=WHISPER_LANGUAGE,
+                    progress=progress)
             else:
-                segments = _transcribe_cpu(video_path, ms)
+                segments = _transcribe_cpu(video_path, ms, progress)
         except RuntimeError as e:
             last_err = f"{type(e).__name__}: {e}"
-            print(f"GPU transcription backend unavailable: {e}")
-            if b != "cpu" and not require_gpu:
-                print("Falling back to CPU.")
-            if b == "cpu":
-                print("CPU backend falhou.")
+            if progress is None:
+                print(f"GPU transcription backend unavailable: {e}")
+                if b != "cpu" and not require_gpu:
+                    print("Falling back to CPU.")
+                if b == "cpu":
+                    print("CPU backend falhou.")
+            else:
+                progress.warn(f"backend indisponível ({b}): {e}")
+                if b != "cpu" and not require_gpu:
+                    progress.detail("Falling back to CPU.")
+                if b == "cpu":
+                    progress.warn("CPU backend falhou.")
             if b == "cpu" or require_gpu:
                 if metrics is not None:
                     try:
@@ -159,7 +205,9 @@ def transcribe(video_path: str, cache_dir: Path | None = None, force: bool = Fal
                 raise
             continue
         if cache_dir and fp:
-            save_transcript(cache_dir, fp, segments)
+            save_transcript(cache_dir, fp, segments, progress)
+        if stage is not None:
+            progress.done("transcribe", f"{len(segments)} segmentos")
         if metrics is not None:
             try:
                 metrics.set_transcription(

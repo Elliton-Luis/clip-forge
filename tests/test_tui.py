@@ -35,6 +35,7 @@ def full_cfg(**over):
         "review_titles": False, "review_clips": False, "work_dir": None, "custom_words": None,
         "acoustic_captions": False, "whisper_model": "medium", "laughs": None,
         "caption_mode": "phrases", "align": "off", "selection_mode": "classic",
+        "verbose": False, "quiet": False, "log_file": None,
     }
     cfg.update(over)
     return cfg
