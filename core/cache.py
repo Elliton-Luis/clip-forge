@@ -87,6 +87,15 @@ def load_scores(cache_dir: Path, fp: str, candidates: list) -> bool:
             c.failed = bool(s.get("failed", False))
             c.energy = s.get("energy", "media")
             c.speech_rate = float(s.get("speech_rate", 0))
+            # Peak (modo experimental): arquivos antigos não têm as chaves.
+            c.window_start = s.get("window_start")
+            c.window_end = s.get("window_end")
+            c.peak_start = s.get("peak_start")
+            c.peak_end = s.get("peak_end")
+            c.peak_score = float(s.get("peak_score", 0) or 0)
+            c.peak_source = s.get("peak_source", "none") or "none"
+            c.peak_reason = s.get("peak_reason", "")
+            c.title_source = s.get("title_source", "window") or "window"
         print(f"   -> cache hit: scores {p}")
         return True
     except Exception as e:
@@ -104,7 +113,15 @@ def save_scores(cache_dir: Path, fp: str, candidates: list) -> None:
             "scores": [
                 {"score": c.score, "reason": c.reason, "title": c.title,
                  "hashtags": c.hashtags, "failed": c.failed,
-                 "energy": c.energy, "speech_rate": c.speech_rate}
+                 "energy": c.energy, "speech_rate": c.speech_rate,
+                 "window_start": getattr(c, "window_start", None),
+                 "window_end": getattr(c, "window_end", None),
+                 "peak_start": getattr(c, "peak_start", None),
+                 "peak_end": getattr(c, "peak_end", None),
+                 "peak_score": getattr(c, "peak_score", 0.0),
+                 "peak_source": getattr(c, "peak_source", "none"),
+                 "peak_reason": getattr(c, "peak_reason", ""),
+                 "title_source": getattr(c, "title_source", "window")}
                 for c in candidates
             ],
         }

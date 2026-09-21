@@ -39,7 +39,14 @@ metrics/<data>_<video>_<id>.json (relatório da execução)
    calibrado + duração/energia/speech_rate + contexto/few-shot; retry 3× com
    backoff 10/30/60 s; falha marca `failed` (nunca nota 0 silenciosa).
 5. **Seleção** — NMS com decaimento (`score * (1 - 0.8*overlap)`), filtro
-   `--min-score`, diversidade `--max-per-10min`.
+   `--min-score`, diversidade `--max-per-10min`. Modo experimental
+   `--selection-mode peak`: detecta o auge de cada candidato (LLM em
+   subjanelas de ~12 s, fallback heurístico sem rede) e constrói o clip ao
+   redor dele (frases inteiras + mínimo, nunca estofado até o máximo);
+   ranqueia por intensidade do auge, suprime mesmo-momento por overlap de
+   peaks e re-titula só os selecionados com grounding validado. Comparar com
+   `python clipper.py peak-compare video.mkv --top 5 --cache-dir .cache/clipper`
+   (números em `docs/peak-experiment.md`: 90 s → ~21–32 s nos mesmos momentos).
 6. **Corte** — `ffmpeg` com seek rápido + `trim`/`atrim` frame-accurate;
    composição vertical 1080x1920 (vídeo 1080x1400 + faixas blur do próprio
    vídeo); legenda ASS (Montserrat ExtraBold, base, destaque amarelo nas
@@ -419,6 +426,7 @@ toca vídeos, modelos, `cortes/`, código ou `.env`. Na TUI: menu
 | `--caption-mode` | `words` (blocos de leitura) ou `intervals` (rajadas, experimental) | `words` |
 | `--no-audio-features` | Pula energia de áudio (mais rápido) | áudio on |
 | `--min-score F` (0–10) | Score mínimo | 6.0 |
+| `--selection-mode` | `classic` (padrão calibrado) ou `peak` (experimental, clip ao redor do auge) | `classic` |
 | `--max-per-10min N` (1–20) | Máximo por janela de 10 min | 2 |
 | `--context TEXTO` | Contexto injetado no prompt | — |
 | `--examples JSON` | Few-shot (ver `examples.json`, máx 4) | — |

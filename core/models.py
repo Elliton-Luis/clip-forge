@@ -42,6 +42,15 @@ class Candidate:
     original_start: float = 0.0
     original_end: float = 0.0
     snapped: bool = False
+    # --- Peak (modo experimental --selection-mode peak; classic ignora) ---
+    window_start: float | None = None  # bounds da janela original (pré-peak)
+    window_end: float | None = None
+    peak_start: float | None = None  # trecho de maior interesse
+    peak_end: float | None = None
+    peak_score: float = 0.0  # intensidade do auge (0..10)
+    peak_source: str = "none"  # none|heuristic|llm
+    peak_reason: str = ""
+    title_source: str = "window"  # window|peak
 
     @property
     def duration(self) -> float:

@@ -21,7 +21,7 @@ from core.config import (
     DEFAULT_MODEL, DEFAULT_PAD_SECONDS, DEFAULT_MIN_SCORE, DEFAULT_MAX_PER_10MIN,
     MIN_CLIP_SECONDS, MAX_CLIP_SECONDS,
     CLIPPER_TRANSCRIBE_BACKEND, CLIPPER_CPU_THREADS, CLIPPER_FFMPEG_THREADS,
-    WHISPER_MODEL_SIZE, CLIPPER_ALIGN,
+    WHISPER_MODEL_SIZE, CLIPPER_ALIGN, CLIPPER_SELECTION_MODE,
 )
 from core.preflight import check as preflight
 from core.cache import fingerprint
@@ -98,6 +98,10 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["off", "whisper-refine", "wav2vec2"],
                    help="Forced alignment opt-in (padrão: env CLIPPER_ALIGN ou off; "
                         "whisper-refine reusa o próprio Whisper em janela curta, sem deps novas)")
+    p.add_argument("--selection-mode", default=CLIPPER_SELECTION_MODE,
+                   choices=["classic", "peak"],
+                   help="Seleção: classic (janela+score, padrão calibrado) ou peak "
+                        "(experimental: clip construído ao redor do auge)")
     return p
 
 
@@ -118,7 +122,7 @@ CONFIG_FIELDS = (
     "no_audio_features", "min_score", "max_per_10min", "context",
     "examples", "transcribe_backend", "debug_captions",
     "review_transcript", "review_titles", "work_dir", "custom_words",
-    "align",
+    "align", "selection_mode",
 )
 
 
@@ -162,6 +166,7 @@ def config_from_args(args) -> dict:
         "work_dir": args.work_dir,
         "custom_words": args.custom_words,
         "align": getattr(args, "align", "off"),
+        "selection_mode": getattr(args, "selection_mode", "classic"),
     }
 
 
@@ -189,6 +194,11 @@ def validate_config(cfg: dict) -> None:
         _resolve_align(cfg.get("align", "off"))
     except ValueError as e:
         sys.exit(f"--align inválido: {e}")
+    try:
+        from core.peaks import resolve_selection_mode as _resolve_sel
+        _resolve_sel(cfg.get("selection_mode", "classic"))
+    except ValueError as e:
+        sys.exit(f"--selection-mode inválido: {e}")
 
 
 def cli_command(cfg: dict) -> str:
@@ -249,6 +259,8 @@ def cli_command(cfg: dict) -> str:
         parts += ["--custom-words", cfg["custom_words"]]
     if cfg.get("align", "off") != "off":
         parts += ["--align", cfg["align"]]
+    if cfg.get("selection_mode", "classic") != "classic":
+        parts += ["--selection-mode", cfg["selection_mode"]]
     return " ".join(shlex.quote(x) for x in parts)
 
 
@@ -417,6 +429,7 @@ def run_pipeline(cfg: dict) -> None:
         "vertical": not cfg["no_vertical"], "captions": not cfg["no_captions"],
         "title": not cfg.get("no_title", False),
         "audio_features": not cfg["no_audio_features"],
+        "selection_mode": cfg.get("selection_mode", "classic"),
     }
     metrics = ExecutionMetrics(video, run_args).start()
     stage = "preflight"
@@ -490,8 +503,40 @@ def run_pipeline(cfg: dict) -> None:
 
         stage = "selection"
         with metrics.stage("selection"):
-            selected = select_top(candidates, cfg["top"], min_score=cfg["min_score"],
-                                  max_per_10min=cfg["max_per_10min"])
+            if cfg.get("selection_mode", "classic") == "peak":
+                # Experimental: auge por candidato → clip ao redor do peak →
+                # ranqueio por intensidade → títulos do auge (só selecionados).
+                from core.peaks import (detect_all as _detect_all,
+                                        build_clip_around_peak as _reframe,
+                                        select_peak as _select_peak,
+                                        retitle_peak as _retitle)
+                from core.backends import probe_duration as _probe2
+                _laugh_ranges = []
+                if cfg.get("laughs"):
+                    from core import acoustic as _ac0
+                    _laugh_ranges = _ac0.load_laughs(cfg["laughs"])
+                _pstats = _detect_all(
+                    [c for c in candidates if not c.failed], model=cfg["model"],
+                    context=cfg.get("context"), use_llm=True,
+                    laughs=_laugh_ranges, events=None)
+                _mend = media_end if media_end is not None else _probe2(video)
+                for c in candidates:
+                    if not c.failed and c.peak_start is not None:
+                        _reframe(c, min_dur=cfg["min_duration"],
+                                 max_dur=cfg["max_duration"], media_end=_mend)
+                try:
+                    metrics.stages["peaks"] = _pstats.get("time_sec", 0.0)
+                except Exception:
+                    pass
+                selected = _select_peak(candidates, cfg["top"],
+                                        min_score=cfg["min_score"],
+                                        max_per_10min=cfg["max_per_10min"])
+                _tstats = _retitle(selected, cfg["model"])
+                print(f"   -> peak titles: {_tstats.get('retitled', 0)} do auge, "
+                      f"{_tstats.get('kept', 0)} da janela")
+            else:
+                selected = select_top(candidates, cfg["top"], min_score=cfg["min_score"],
+                                      max_per_10min=cfg["max_per_10min"])
             if not selected:
                 sys.exit("Nenhum clipe passou no corte. Tente --min-score menor.")
             if cfg.get("review_titles"):
@@ -563,6 +608,15 @@ def run_pipeline(cfg: dict) -> None:
                 "highlight_warnings": warn.get(i, {}).get("highlight", []),
                 "acoustic_events": [{"type": e.type, "start": e.start, "end": e.end,
                                      "confidence": e.confidence} for e in (events or [])],
+                **(({
+                    "selection_mode": "peak",
+                    "window_start": round(c.window_start, 1) if c.window_start is not None else None,
+                    "window_end": round(c.window_end, 1) if c.window_end is not None else None,
+                    "peak_start": round(c.peak_start, 1) if c.peak_start is not None else None,
+                    "peak_end": round(c.peak_end, 1) if c.peak_end is not None else None,
+                    "peak_score": round(c.peak_score, 2), "peak_source": c.peak_source,
+                    "peak_reason": c.peak_reason, "title_source": c.title_source,
+                } if cfg.get("selection_mode", "classic") == "peak" else {})),
             })
         cut_time = round(time.time() - t_cut, 3)
         metrics.stages["cutting"] = cut_time
@@ -632,7 +686,7 @@ def main() -> None:
     # normal porque "transcribe-lab"/"lab-compare" não são caminhos de vídeo.
     if len(sys.argv) > 1 and sys.argv[1] in (
             "transcribe-lab", "lab-compare", "transcribe-approve", "finalize",
-            "caption-lab", "align-compare", "reset"):
+            "caption-lab", "align-compare", "peak-compare", "reset"):
         from core import translab as _lab
         import argparse as _ap
         if sys.argv[1] == "reset":
@@ -688,6 +742,22 @@ def main() -> None:
             a = q.parse_args(sys.argv[2:])
             _al.run(a.video, a.start, a.dur, backend=a.backend,
                     model_size=a.whisper_model)
+            return
+        if sys.argv[1] == "peak-compare":
+            from core import peaklab as _pl
+            from core.config import DEFAULT_MIN_SCORE as _dms
+            q = _ap.ArgumentParser(
+                description="Compara seleção classic vs peak nos mesmos candidatos.")
+            q.add_argument("video", help="Vídeo de entrada")
+            q.add_argument("--top", type=int, default=5, help="Clipes por modo")
+            q.add_argument("--cache-dir", default=None, help="Cache (ex: .cache/clipper)")
+            q.add_argument("--no-llm", action="store_true",
+                           help="Peak heurístico (sem chamadas LLM de auge/título)")
+            q.add_argument("--min-score", type=float, default=_dms, help="Score mínimo")
+            q.add_argument("--model", default=None, help="Modelo NIM (padrão: env)")
+            a = q.parse_args(sys.argv[2:])
+            _pl.run(a.video, top=a.top, cache_dir=a.cache_dir,
+                    use_llm=not a.no_llm, min_score=a.min_score, model=a.model)
             return
         if sys.argv[1] == "transcribe-approve":
             q = _ap.ArgumentParser(
