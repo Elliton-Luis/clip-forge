@@ -109,7 +109,7 @@ class TestTitleCaptionsRender(unittest.TestCase):
             fake = {"title": "Olá Mundo", "hashtags": "#clip",
                     "score": 8.0, "reason": "ok"}
             with _no_whisper(self), \
-                    mock.patch("core.finish._score_title_llm",
+                    mock.patch("core.finish._title_llm",
                                return_value=fake) as llm:
                 data, reused = fin.make_title(clip, segs, store, fp, "m")
             self.assertFalse(reused)
@@ -121,12 +121,12 @@ class TestTitleCaptionsRender(unittest.TestCase):
             clip = _clip(tmp)
             store = Path(tmp) / "store"
             fp, segs = _seed_transcript(store, clip)
-            with mock.patch("core.finish._score_title_llm",
+            with mock.patch("core.finish._title_llm",
                             return_value={"title": "X", "hashtags": "",
                                           "score": 1.0, "reason": ""}):
                 fin.make_title(clip, segs, store, fp, "m")
             with _no_whisper(self), \
-                    mock.patch("core.finish._score_title_llm") as llm:
+                    mock.patch("core.finish._title_llm") as llm:
                 llm.side_effect = AssertionError("LLM à toa")
                 data, reused = fin.make_title(clip, segs, store, fp, "m")
             self.assertTrue(reused)
@@ -136,12 +136,12 @@ class TestTitleCaptionsRender(unittest.TestCase):
             clip = _clip(tmp)
             store = Path(tmp) / "store"
             fp, segs = _seed_transcript(store, clip)
-            with mock.patch("core.finish._score_title_llm",
+            with mock.patch("core.finish._title_llm",
                             return_value={"title": "X", "hashtags": "",
                                           "score": 1.0, "reason": ""}):
                 fin.make_title(clip, segs, store, fp, "model-a")
             with _no_whisper(self), \
-                    mock.patch("core.finish._score_title_llm",
+                    mock.patch("core.finish._title_llm",
                                return_value={"title": "Y", "hashtags": "",
                                              "score": 1.0, "reason": ""}) as llm:
                 data, reused = fin.make_title(clip, segs, store, fp, "model-b")
@@ -210,6 +210,127 @@ class TestManualTitle(unittest.TestCase):
                 data = fin.set_manual_title(clip, segs, store, fp, "Meu Título")
             self.assertEqual(data["title"], "Meu Título")
             self.assertEqual((Path(store) / "transcript.json").read_bytes(), before)
+
+
+class TestDependencyGraph(unittest.TestCase):
+    """Grafo FINISH: title→transcript, captions→transcript,
+    render→transcript(+title/captions). title ↛ captions, captions ↛ title,
+    e NADA chama descoberta (candidatos/scoring/NMS/seleção)."""
+
+    def _boom(self, name):
+        def _f(*a, **k):
+            self.fail(f"descoberta/dependência indevida: {name}")
+        return _f
+
+    def _discovery_off(self):
+        return (
+            mock.patch("clipper.build_candidates",
+                       side_effect=self._boom("candidatos")),
+            mock.patch("clipper.score_candidates",
+                       side_effect=self._boom("scoring")),
+            mock.patch("clipper.select_top",
+                       side_effect=self._boom("seleção")),
+            mock.patch("clipper.annotate_audio",
+                       side_effect=self._boom("energia p/ seleção")),
+            mock.patch("core.scoring.score",
+                       side_effect=self._boom("scoring.score")),
+        )
+
+    def _run_all(self, exit_stack, fn, *a, **k):
+        for p in self._discovery_off():
+            exit_stack.enter_context(p)
+        return fn(*a, **k)
+
+    def test_title_sem_captions_sem_descoberta(self):
+        import contextlib
+        with TemporaryDirectory() as tmp:
+            clip = _clip(tmp)
+            store = Path(tmp) / "store"
+            _seed_transcript(store, clip)
+            fake = {"title": "T", "hashtags": "", "score": None,
+                    "reason": "finish-llm"}
+            with contextlib.ExitStack() as st, \
+                    _no_whisper(self), \
+                    mock.patch("core.finish._title_llm",
+                               return_value=fake), \
+                    mock.patch("core.finish.make_captions",
+                               side_effect=self._boom("captions")):
+                res = self._run_all(st, fin.run_finish, clip,
+                                    out_dir=str(Path(tmp) / "o"),
+                                    only="title",
+                                    store=str(store), model="m")
+            self.assertEqual(res["title"], "T")
+
+    def test_captions_sem_title_sem_descoberta(self):
+        import contextlib
+        with TemporaryDirectory() as tmp:
+            clip = _clip(tmp)
+            store = Path(tmp) / "store"
+            _seed_transcript(store, clip)
+            with contextlib.ExitStack() as st, \
+                    _no_whisper(self), \
+                    mock.patch("core.finish._title_llm",
+                               side_effect=self._boom("title")), \
+                    mock.patch("core.finish.make_title",
+                               side_effect=self._boom("make_title")):
+                res = self._run_all(st, fin.run_finish, clip,
+                                    out_dir=str(Path(tmp) / "o"),
+                                    only="captions",
+                                    store=str(store), model="m")
+            self.assertTrue(res["srt"].endswith(".srt"))
+
+    def test_render_so_com_artefatos_sem_llm_sem_descoberta(self):
+        import contextlib
+        with TemporaryDirectory() as tmp:
+            clip = _clip(tmp)
+            store = Path(tmp) / "store"
+            fp, segs = _seed_transcript(store, clip)
+            with mock.patch("core.finish._title_llm",
+                            return_value={"title": "T", "hashtags": "",
+                                          "score": None, "reason": "x"}):
+                fin.make_title(clip, segs, store, fp, "m")
+            fin.make_captions(segs, store, fp, clip)
+
+            def _fake_cut(video, c, out_path, **kw):
+                Path(out_path).write_bytes(b"render")
+            with contextlib.ExitStack() as st, \
+                    _no_whisper(self), \
+                    mock.patch("core.finish._title_llm",
+                               side_effect=self._boom("LLM")), \
+                    mock.patch("core.finish.cut_clip",
+                               side_effect=_fake_cut):
+                res = self._run_all(st, fin.run_finish, clip,
+                                    out_dir=str(Path(tmp) / "o"),
+                                    only="render",
+                                    store=str(store), model="m")
+            self.assertTrue(res["out"].endswith("_final.mp4"))
+
+    def test_render_sem_titulo_erro_claro(self):
+        with TemporaryDirectory() as tmp:
+            clip = _clip(tmp)
+            store = Path(tmp) / "store"
+            _seed_transcript(store, clip)
+            with _no_whisper(self), \
+                    self.assertRaises(RuntimeError):
+                fin.run_finish(clip, out_dir=str(Path(tmp) / "o"),
+                               only="render", store=str(store), model="m")
+
+    def test_regenerate_title_nao_toca_captions(self):
+        with TemporaryDirectory() as tmp:
+            clip = _clip(tmp)
+            store = Path(tmp) / "store"
+            fp, segs = _seed_transcript(store, clip)
+            fin.make_captions(segs, store, fp, clip)
+            caps_before = (Path(store) / "captions.json").read_bytes()
+            with mock.patch("core.finish._title_llm",
+                            return_value={"title": "Novo", "hashtags": "",
+                                          "score": None, "reason": "x"}):
+                with _no_whisper(self):
+                    fin.run_finish(clip, out_dir=str(Path(tmp) / "o"),
+                                   only="title", store=str(store), model="m",
+                                   regen_title=True)
+            self.assertEqual((Path(store) / "captions.json").read_bytes(),
+                             caps_before)
 
 
 if __name__ == "__main__":

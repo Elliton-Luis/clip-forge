@@ -427,7 +427,15 @@ python clipper.py finish clip.mp4 --only title                    # só título
 python clipper.py finish clip.mp4 --only captions --out final/    # só .srt
 python clipper.py finish clip.mp4 --only render --out final/      # só render
 python clipper.py finish clip.mp4 --title "Meu Título" --only render --out final/
+python clipper.py finish clip.mp4 --only title --regenerate-title # força título
+python clipper.py finish clip.mp4 --only render --review --out final/  # A/E/S/Q
 ```
+
+Título e legenda são independentes (pedir um nunca gera o outro) e nunca
+chamam descoberta (sem candidatos/scoring/NMS/seleção) nem Whisper — o título
+usa LLM próprio só para nomear o momento. `--regenerate-title` /
+`--regenerate-captions` forçam cada um (transcript intacto); `--review`
+abre a revisão pré-burn-in (edição regenera só as legendas).
 
 Detalhes: `--custom-words vocab.json` (`{"words": [...]}`) aplica correção de
 palavra inteira após transcrever (whisper.cpp não tem prompting de vocabulário;

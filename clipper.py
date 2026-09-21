@@ -804,20 +804,21 @@ def main() -> None:
                     use_llm=not a.no_llm, min_score=a.min_score, model=a.model)
             return
         if sys.argv[1] == "finish":
-            # FINISH: clip existente → título/legenda/render sem Whisper.
-            # Só transcreve o clip uma vez se o transcript não existir/invalidar.
+            # FINISH: clip existente → título/legenda/render sem descoberta
+            # (sem candidatos/scoring/NMS) e sem Whisper quando há artefato.
             from core import finish as _fin
-            from core import artifacts as _art
             from core.config import DEFAULT_MODEL as _dm
             from core.config import WHISPER_MODEL_SIZE as _wms
             q = _ap.ArgumentParser(
                 description="Finaliza clip existente a partir da transcrição "
                             "reutilizada (Whisper só roda se faltar transcript).")
-            q.add_argument("clip", help="Clip existente (nunca alterado)")
+            q.add_argument("clip", help="Clip existente, o momento já escolhido "
+                                        "(nunca alterado)")
             q.add_argument("--out", default="cortes", help="Pasta de saída")
             q.add_argument("--only", default="all",
                            choices=["all", "title", "captions", "render"],
-                           help="Gera só o que falta (all = título+legenda+render)")
+                           help="Operações independentes (all = título+legenda+render; "
+                                "title não gera legenda e vice-versa)")
             q.add_argument("--store-dir", default=None,
                            help="Dir de artefatos (padrão: work/<clip>/artifacts)")
             q.add_argument("--model", default=_dm, help="Modelo NIM p/ título")
@@ -830,59 +831,32 @@ def main() -> None:
             q.add_argument("--caption-mode", default="phrases",
                            choices=["words", "intervals", "phrases"])
             q.add_argument("--no-vertical", action="store_true", help="Sem 9:16")
+            q.add_argument("--regenerate-title", action="store_true",
+                           help="Regenera o título (transcript preservado)")
+            q.add_argument("--regenerate-captions", action="store_true",
+                           help="Regenera as legendas (transcript preservado)")
             q.add_argument("--force", action="store_true",
-                           help="Regenera título/legenda (transcript preservado)")
+                           help="Regenera título E legenda (transcript preservado)")
             q.add_argument("--force-transcribe", action="store_true",
                            help="Retranscreve o clip (último recurso)")
+            q.add_argument("--review", action="store_true",
+                           help="Revisa (A/E/S/Q) antes do burn-in (só com render)")
             a = q.parse_args(sys.argv[2:])
-            _store = Path(a.store_dir).expanduser() if a.store_dir else None
-            _store = _store or _art.store_dir(a.clip)
-            _segs, _reused = _fin.ensure_transcript(
-                a.clip, _store, whisper_model=a.whisper_model, force=a.force_transcribe)
-            _fp = _fin._fp(a.clip, a.whisper_model)
-            _title = None
-            if a.only in ("all", "title") or a.only == "render":
-                if a.title:
-                    _title = _fin.set_manual_title(a.clip, _segs, _store, _fp, a.title)
-                    print(f"   -> título manual: {_title['title']!r}")
-                elif a.only in ("all", "title") and not a.no_title:
-                    _title, _ = _fin.make_title(a.clip, _segs, _store, _fp,
-                                                a.model, force=a.force)
-                    print(f"   -> título: {_title['title']!r}")
-                elif a.only == "render" and not a.no_title:
-                    try:
-                        _title = _art.load_artifact(_store, "title", _fp, {"model": a.model})
-                        if _title.get("transcript_hash") != _art.transcript_hash(_segs):
-                            raise _art.InvalidArtifact("title.json de outro transcript")
-                    except _art.InvalidArtifact as e:
-                        sys.exit(f"Render precisa de título: {e} "
-                                 f"(rode --only title ou passe --title/--no-title)")
-            if a.only == "title":
-                print(f"TÍTULO: {(_title or {}).get('title', '')}")
-                return
-            _caps = None
-            if not a.no_captions and a.only in ("all", "captions", "render"):
-                from core.video import highlight_words_from_title
-                _caps, _ = _fin.make_captions(
-                    _segs, _store, _fp, a.clip, caption_mode=a.caption_mode,
+            try:
+                _res = _fin.run_finish(
+                    a.clip, out_dir=a.out, only=a.only,
+                    store=(Path(a.store_dir).expanduser() if a.store_dir else None),
+                    model=a.model, whisper_model=a.whisper_model,
+                    title_text=a.title, no_captions=a.no_captions,
+                    no_title=a.no_title, caption_mode=a.caption_mode,
                     vertical=not a.no_vertical,
-                    highlight=highlight_words_from_title((_title or {}).get("title", "")),
-                    hook_title=(_title or {}).get("title") if not a.no_title else None,
-                    force=a.force)
-                if a.only == "captions":
-                    out_d = Path(a.out)
-                    out_d.mkdir(parents=True, exist_ok=True)
-                    srt_p = out_d / (Path(a.clip).stem + ".srt")
-                    srt_p.write_text(_caps["srt"], encoding="utf-8")
-                    print(f"LEGENDA: {srt_p.resolve()} (sem Whisper, sem render)")
-                    return
-            _out = Path(a.out) / (Path(a.clip).stem + "_final.mp4")
-            _fin.render_clip(a.clip, _segs, _title, _out,
-                             vertical=not a.no_vertical,
-                             with_captions=not a.no_captions,
-                             with_title=not a.no_title,
-                             caption_mode=a.caption_mode)
-            print(f"FINAL: {_out.resolve()}")
+                    regen_title=a.regenerate_title or a.force,
+                    regen_captions=a.regenerate_captions or a.force,
+                    force_transcribe=a.force_transcribe, review=a.review)
+            except RuntimeError as e:
+                sys.exit(str(e))
+            if a.only == "title":
+                print(f"TÍTULO: {_res.get('title', '')}")
             return
         if sys.argv[1] == "transcribe-approve":
             q = _ap.ArgumentParser(
